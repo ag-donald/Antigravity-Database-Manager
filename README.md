@@ -75,10 +75,20 @@ The raw `.pb` data files at `~/.gemini/antigravity/conversations/` and brain art
 
 ### Steps
 
+**Option A — Use the launcher script (recommended):**
+
+| Platform | Command |
+|----------|---------|
+| **Windows (CMD)** | Double-click `run.bat` or run it from a terminal |
+| **Windows (PowerShell)** | `.\run.ps1` |
+| **Linux / macOS** | `chmod +x run.sh && ./run.sh` |
+
+**Option B — Run Python directly:**
+
 ```bash
 # 1. Close Antigravity IDE completely (mandatory!)
 
-# 2. Download and run the recovery script
+# 2. Run the recovery script
 python antigravity_recover.py
 
 # 3. Follow the interactive prompts
