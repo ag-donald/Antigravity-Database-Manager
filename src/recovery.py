@@ -264,8 +264,8 @@ def main() -> None:
     Logger.info(f"Discovered {len(all_pbs)} conversation(s) on disk.")
     Logger.info("Extracting existing metadata from database...")
 
-    existing_titles = {}
-    existing_inner_blobs = {}
+    existing_titles: dict[str, str] = {}
+    existing_inner_blobs: dict[str, bytes] = {}
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()

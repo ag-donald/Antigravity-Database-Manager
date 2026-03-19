@@ -1,0 +1,56 @@
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\__init__.py:5:75: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:23:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:28:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:32:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:83:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:86:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:90:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:119:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:17:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:20:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:26:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:30:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:62:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:65:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:95:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\cli.py:109:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:25:5: E304 blank lines found after function decorator
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:62:121: E501 line too long (121 > 120 characters)
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:80:121: E501 line too long (158 > 120 characters)
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:101:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:105:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:138:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:142:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:155:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:159:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:161:83: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:166:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:241:32: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:242:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:254:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:261:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:10:1: F401 're' imported but unused
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:46:91: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:47:91: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:49:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:52:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:54:49: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:127:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:132:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:138:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:163:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:251:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:275:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:299:11: F541 f-string is missing placeholders
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:300:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:305:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:319:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:326:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:357:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:376:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:379:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:389:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:390:19: W291 trailing whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:412:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:420:1: W293 blank line contains whitespace
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:446:1: W391 blank line at end of file

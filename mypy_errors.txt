@@ -1,0 +1,7 @@
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:59: error: Missing type parameters for generic type "dict"  [type-arg]
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:77: error: Missing type parameters for generic type "dict"  [type-arg]
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\protobuf.py:233: error: Missing type parameters for generic type "dict"  [type-arg]
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\artifacts.py:134: error: Argument "key" to "max" has incompatible type overloaded function; expected "Callable[[str], SupportsDunderLT[Any] | SupportsDunderGT[Any]]"  [arg-type]
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:267: error: Need type annotation for "existing_titles" (hint: "existing_titles: dict[<type>, <type>] = ...")  [var-annotated]
+C:\Users\donro\OneDrive\Desktop\Google-Antigravity-IDE-Database-Sync---Fix\src\recovery.py:268: error: Need type annotation for "existing_inner_blobs" (hint: "existing_inner_blobs: dict[<type>, <type>] = ...")  [var-annotated]
+Found 6 errors in 1 file (checked 9 source files)

@@ -131,5 +131,5 @@ class ArtifactParser:
         if not path_counts:
             return None
 
-        best = max(path_counts, key=path_counts.get)
+        best = max(path_counts, key=lambda k: path_counts[k])
         return best.replace("/", os.sep)

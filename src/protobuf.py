@@ -56,7 +56,7 @@ class ProtobufEncoder:
         return cls.write_bytes_field(field_num, inner)
 
     @classmethod
-    def build_workspace_field9(cls, ws: dict) -> bytes:
+    def build_workspace_field9(cls, ws: dict[str, str]) -> bytes:
         """
         Constructs the deeply nested Field 9 workspace metadata.
         Schema: Field 9 { Field 1: uri, Field 2: uri, Field 3 { Field 1: corpus, Field 2: git_remote }, Field 4: branch }
@@ -74,7 +74,7 @@ class ProtobufEncoder:
         return cls.write_bytes_field(9, inner)
 
     @classmethod
-    def build_workspace_field17(cls, ws: dict, session_uuid: str, epoch_seconds: int, nanos: int = 0) -> bytes:
+    def build_workspace_field17(cls, ws: dict[str, str], session_uuid: str, epoch_seconds: int, nanos: int = 0) -> bytes:
         """
         Constructs the deeply nested Field 17 workspace URI parameters.
         Schema: Field 17 { Field 1 { Field 1: uri, Field 2: uri }, Field 2 { Field 1: seconds, Field 2: nanos }, Field 3: session_uuid, Field 7: uri_encoded }
@@ -230,7 +230,7 @@ class ProtobufEncoder:
         cls,
         conv_uuid: str,
         title: str,
-        workspace: dict | None,
+        workspace: dict[str, str] | None,
         create_epoch: int,
         modify_epoch: int,
         existing_inner_data: bytes | None = None,
