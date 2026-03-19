@@ -5,6 +5,8 @@ Extracts human-readable conversation titles from brain artifacts.
 from __future__ import annotations
 
 import os
+import re
+import platform
 
 from .constants import MIN_TITLE_LENGTH, MAX_TITLE_LENGTH, TITLE_ARTIFACT_FILES, OVERVIEW_SUBPATH
 from .logger import Logger
@@ -63,3 +65,53 @@ class ArtifactParser:
         except OSError:
             pass
         return None
+
+    @staticmethod
+    def infer_workspace_from_brain(conv_uuid: str, brain_dir: str) -> str | None:
+        """
+        Scan brain .md files for file:/// paths and infer the workspace
+        from the most common project folder prefix.
+        Returns an OS-native filesystem path string or None.
+        """
+        target_dir = os.path.join(brain_dir, conv_uuid)
+        if not os.path.isdir(target_dir):
+            return None
+
+        is_windows = platform.system() == "Windows"
+        if is_windows:
+            path_pattern = re.compile(r"file:///([A-Za-z](?:%3A|:)/[^)\s\"'\]>]+)")
+        else:
+            path_pattern = re.compile(r"file:///([^)\s\"'\]>]+)")
+
+        path_counts: dict[str, int] = {}
+        try:
+            for name in os.listdir(target_dir):
+                if not name.endswith(".md") or name.startswith("."):
+                    continue
+                filepath = os.path.join(target_dir, name)
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read(16384)
+                    for match in path_pattern.finditer(content):
+                        raw = match.group(1)
+                        # Normalize ASCII URL encodings
+                        raw = raw.replace("%3A", ":").replace("%3a", ":")
+                        raw = raw.replace("%20", " ")
+                        parts = raw.replace("\\", "/").split("/")
+                        
+                        # Windows typically needs 5 segments (C:/Users/name/Desktop/Project)
+                        # POSIX typically needs 4 segments (/home/name/projects/Project)
+                        depth = 5 if is_windows else 4
+                        if len(parts) >= depth:
+                            ws = "/".join(parts[:depth])
+                            path_counts[ws] = path_counts.get(ws, 0) + 1
+                except OSError:
+                    pass
+        except OSError:
+            return None
+
+        if not path_counts:
+            return None
+
+        best = max(path_counts, key=path_counts.get)
+        return best.replace("/", os.sep)

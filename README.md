@@ -168,7 +168,7 @@ antigravity_recover.py        ← Thin entry point (invokes src.recovery.main)
 ```bash
 python antigravity_recover.py           # Interactive recovery
 python antigravity_recover.py --help    # Display help documentation
-python antigravity_recover.py --version # Display version number (v1.2.0)
+python antigravity_recover.py --version # Display version number (v1.3.0)
 ```
 
 ### Debug Mode

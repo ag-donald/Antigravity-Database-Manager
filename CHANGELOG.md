@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] - 2026-03-19
+
+### Added
+- **Partial Data Loss Recovery**: Extracts existing titles and preserves tool state from partially corrupt Protobuf records (e.g., missing titles, stripped workspaces, broken timestamps).
+- **Workspace Auto-Inference**: Automatically detects the correct workspace path for a conversation by parsing `file:///` URLs inside Markdown brain artifacts.
+- **Interactive Batch Assignment**: Provides a robust CLI menu for interactively assigning unmapped conversations to workspaces, including "apply to all" batching.
+- **Timestamp Injection**: Automatically injects missing modification and creation timestamps into existing trajectory strings if the IDE stripped them.
+
+### Changed
+- Re-architected `src/recovery.py` Core Loop into a 6-phase pipeline (Pre-flight → Discovery & Extraction → Workspace Mapping → Backup → Injection → Summary).
+- `src/protobuf.py` now parses raw Varints and Length-delimited fields to enable non-destructive field patching.
+- Enhanced standard formatting in `src/cli.py` to support dynamic interactive lists.
+
 ## [1.2.0] - 2026-03-19
 
 ### Fixed

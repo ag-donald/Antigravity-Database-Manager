@@ -14,11 +14,14 @@ import uuid
 
 class ProtobufEncoder:
     """
-    Deterministic Protobuf Wire Format encoder for Wire Type 0 (Varint)
-    and Wire Type 2 (Length-delimited) fields.
+    Deterministic Protobuf Wire Format encoder and non-destructive modifier.
+    Supports parsing and patching existing blobs to preserve tool state.
     """
 
+    # --- Encoding Helpers ---
+
     @staticmethod
+
     def write_varint(v: int) -> bytes:
         """Encode a non-negative integer as a Protobuf base-128 varint."""
         if v == 0:
@@ -89,35 +92,175 @@ class ProtobufEncoder:
         )
         return cls.write_bytes_field(17, inner)
 
+    # --- Decoding & Patching Helpers ---
+
+    @staticmethod
+    def decode_varint(data: bytes, pos: int) -> tuple[int, int]:
+        """Decode a Protobuf varint at the given position. Returns (value, new_pos)."""
+        result, shift = 0, 0
+        while pos < len(data):
+            b = data[pos]
+            result |= (b & 0x7F) << shift
+            if (b & 0x80) == 0:
+                return result, pos + 1
+            shift += 7
+            pos += 1
+        return result, pos
+
+    @classmethod
+    def skip_protobuf_field(cls, data: bytes, pos: int, wire_type: int) -> int:
+        """Skip over a Protobuf field value. Returns new_pos."""
+        if wire_type == 0:    # varint
+            _, pos = cls.decode_varint(data, pos)
+        elif wire_type == 2:  # length-delimited
+            length, pos = cls.decode_varint(data, pos)
+            pos += length
+        elif wire_type == 1:  # 64-bit fixed
+            pos += 8
+        elif wire_type == 5:  # 32-bit fixed
+            pos += 4
+        return pos
+
+    @classmethod
+    def strip_field_from_protobuf(cls, data: bytes, target_field_number: int) -> bytes:
+        """
+        Remove all instances of a specific field from raw protobuf bytes.
+        Returns the remaining bytes with the target field stripped out.
+        """
+        remaining = b""
+        pos = 0
+        while pos < len(data):
+            start_pos = pos
+            try:
+                tag, pos = cls.decode_varint(data, pos)
+            except Exception:
+                remaining += data[start_pos:]
+                break
+            wire_type = tag & 7
+            field_num = tag >> 3
+            new_pos = cls.skip_protobuf_field(data, pos, wire_type)
+            if new_pos == pos and wire_type not in (0, 1, 2, 5):
+                # Unknown wire type — keep everything from here to avoid corruption
+                remaining += data[start_pos:]
+                break
+            pos = new_pos
+            if field_num != target_field_number:
+                remaining += data[start_pos:pos]
+        return remaining
+
+    @classmethod
+    def has_timestamp_fields(cls, inner_blob: bytes) -> bool:
+        """Check if the inner blob already contains timestamp fields (3, 7, or 10)."""
+        if not inner_blob:
+            return False
+        try:
+            pos = 0
+            while pos < len(inner_blob):
+                tag, pos = cls.decode_varint(inner_blob, pos)
+                fn = tag >> 3
+                wt = tag & 7
+                if fn in (3, 7, 10):
+                    return True
+                pos = cls.skip_protobuf_field(inner_blob, pos, wt)
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def extract_workspace_hint(cls, inner_blob: bytes) -> str | None:
+        """
+        Extract a workspace URI from the protobuf inner blob.
+        Scans length-delimited fields for strings matching file:/// patterns.
+        """
+        if not inner_blob:
+            return None
+        try:
+            pos = 0
+            while pos < len(inner_blob):
+                tag, pos = cls.decode_varint(inner_blob, pos)
+                wire_type = tag & 7
+                field_num = tag >> 3
+                if wire_type == 2:
+                    l, pos = cls.decode_varint(inner_blob, pos)
+                    content = inner_blob[pos:pos + l]
+                    pos += l
+                    if field_num > 1:
+                        try:
+                            text = content.decode("utf-8", errors="strict")
+                            if "file:///" in text:
+                                return text
+                        except Exception:
+                            pass
+                elif wire_type == 0:
+                    _, pos = cls.decode_varint(inner_blob, pos)
+                elif wire_type == 1:
+                    pos += 8
+                elif wire_type == 5:
+                    pos += 4
+                else:
+                    break
+        except Exception:
+            pass
+        return None
+
     @classmethod
     def build_trajectory_entry(
+
         cls,
         conv_uuid: str,
         title: str,
-        workspace: dict,
+        workspace: dict | None,
         create_epoch: int,
         modify_epoch: int,
+        existing_inner_data: bytes | None = None,
         step_count: int = 1,
     ) -> bytes:
         """
         Generates a complete trajectorySummaries entry with Base64-wrapped
-        inner Protobuf payload, matching the IDE's exact parsing expectations.
+        inner Protobuf payload. 
+        
+        If `existing_inner_data` is provided, fields are patched non-destructively:
+        - Field 1 (Title) is overwritten.
+        - Field 9 and 17 (Workspace) are injected/overwritten if `workspace` is active.
+        - Fields 3, 7, 10 (Timestamps) are injected ONLY if entirely missing.
         """
         parent_uuid = str(uuid.uuid4())
 
-        inner_pb = (
-            cls.write_string_field(1, title)
-            + cls.write_varint_field(2, step_count)
-            + cls.write_timestamp(3, create_epoch)
-            + cls.write_string_field(4, parent_uuid)
-            + cls.write_varint_field(5, 1)       # Status: ACTIVE
-            + cls.write_timestamp(7, modify_epoch)
-            + cls.build_workspace_field9(workspace)
-            + cls.write_timestamp(10, modify_epoch)
-            + cls.write_string_field(15, "")
-            + cls.write_varint_field(16, 0)
-            + cls.build_workspace_field17(workspace, parent_uuid, modify_epoch)
-        )
+        if existing_inner_data:
+            # Strip Field 1 so we can inject the fresh title securely
+            preserved_fields = cls.strip_field_from_protobuf(existing_inner_data, 1)
+            inner_pb = cls.write_string_field(1, title) + preserved_fields
+            
+            # Conditionally inject/override workspace config
+            if workspace:
+                inner_pb = cls.strip_field_from_protobuf(inner_pb, 9)
+                inner_pb = cls.strip_field_from_protobuf(inner_pb, 17)
+                inner_pb += cls.build_workspace_field9(workspace)
+                inner_pb += cls.build_workspace_field17(workspace, parent_uuid, modify_epoch)
+            
+            # Conditionally inject timestamps if they are entirely stripped
+            if not cls.has_timestamp_fields(existing_inner_data):
+                inner_pb += (
+                    cls.write_timestamp(3, create_epoch)
+                    + cls.write_timestamp(7, modify_epoch)
+                    + cls.write_timestamp(10, modify_epoch)
+                )
+
+        else:
+            # Standard pristine blob generation for completely missing/new conversations
+            inner_pb = (
+                cls.write_string_field(1, title)
+                + cls.write_varint_field(2, step_count)
+                + cls.write_timestamp(3, create_epoch)
+                + cls.write_string_field(4, parent_uuid)
+                + cls.write_varint_field(5, 1)       # Status: ACTIVE
+                + cls.write_timestamp(7, modify_epoch)
+                + (cls.build_workspace_field9(workspace) if workspace else b"")
+                + cls.write_timestamp(10, modify_epoch)
+                + cls.write_string_field(15, "")
+                + cls.write_varint_field(16, 0)
+                + (cls.build_workspace_field17(workspace, parent_uuid, modify_epoch) if workspace else b"")
+            )
 
         inner_b64 = base64.b64encode(inner_pb).decode("utf-8")
         wrapper = cls.write_string_field(1, inner_b64)
