@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-03-19
+
+### Fixed
+- **Missing database keys**: Script no longer dies fatally when `trajectorySummaries` key is missing from database — creates it from scratch instead
+- **Silent write failures**: Replaced `UPDATE` statements with `INSERT OR REPLACE` for both Protobuf and JSON index writes, ensuring the script works on completely blank or corrupted databases
+- **License reference**: Updated docstring from MIT to Unlicense to match `LICENCE.md`
+
+### Added
+- Multi-workspace limitation warning displayed during interactive workspace registration
+- SSH remote session guidance in the interactive prompt
+- Covers all 11 documented community failure modes (verified against Google AI Dev Forum reports)
+
+### Changed
+- Version bumped to 1.1.0
+
 ## [1.0.0] - 2026-03-19
 
 ### Added

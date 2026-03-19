@@ -10,7 +10,7 @@ from __future__ import annotations
 
   Author:       Donald R. Johnson
   Organization: Agmercium (https://agmercium.com)
-  License:      MIT
+  License:      The Unlicense (Public Domain)
   Version:      1.0.0
   Python:       3.7+
   Dependencies: None (standard library only)
@@ -55,7 +55,7 @@ import urllib.parse
 # ==============================================================================
 # CONSTANTS
 # ==============================================================================
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 TOOL_NAME = "Agmercium Antigravity Recovery Tool"
 MIN_TITLE_LENGTH = 5           # Minimum chars for a line to qualify as a title
 MAX_TITLE_LENGTH = 80          # Truncation limit for extracted titles
@@ -355,6 +355,11 @@ def prompt_workspace() -> dict:
     Logger.header("Project Workspace Registration")
     Logger.info("To reconstruct the IDE indexing schema, we need the absolute")
     Logger.info("path to the project folder whose history was lost.")
+    Logger.info("")
+    Logger.warn("NOTE: All recovered conversations will be bound to this workspace.")
+    Logger.warn("If you have multiple projects, run this tool once for your primary")
+    Logger.warn("project. Conversations will be visible from that project's sidebar.")
+    Logger.warn("For SSH remote sessions, run this tool ON the remote machine.")
 
     while True:
         try:
@@ -533,15 +538,18 @@ def main() -> None:
         row = cur.fetchone()
 
         if not row:
-            Logger.error(f"Key '{PB_KEY}' not found in database.", fatal=False)
-            Logger.error("Please open Antigravity IDE, start at least one conversation, then close and retry.", fatal=True)
+            Logger.warn(f"Key '{PB_KEY}' not found in database. Creating it from scratch.")
+            Logger.info("This is expected on fresh installs or databases where the key was wiped.")
 
-        try:
-            decoded = base64.b64decode(row[0])
-        except Exception as exc:
-            Logger.error(f"Failed to decode Protobuf payload (corrupt base64): {exc}", fatal=False)
-            safe_rollback(backup_db, db_path)
-            Logger.error("Recovery aborted after rollback.", fatal=True)
+        if row:
+            try:
+                decoded = base64.b64decode(row[0])
+            except Exception as exc:
+                Logger.error(f"Failed to decode Protobuf payload (corrupt base64): {exc}", fatal=False)
+                safe_rollback(backup_db, db_path)
+                Logger.error("Recovery aborted after rollback.", fatal=True)
+        else:
+            decoded = b""  # Start with empty payload; all entries will be injected
 
         existing_uuids = set(
             match.decode() for match in re.findall(UUID_PATTERN, decoded)
@@ -579,8 +587,8 @@ def main() -> None:
                 stats["pb_injected"] += 1
 
             cur.execute(
-                "UPDATE ItemTable SET value=? WHERE key=?",
-                (base64.b64encode(result).decode(), PB_KEY),
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+                (PB_KEY, base64.b64encode(result).decode()),
             )
             Logger.success(f"Injected {stats['pb_injected']} Protobuf entries.")
 
@@ -619,8 +627,8 @@ def main() -> None:
 
         entries_after = len(chat_idx["entries"])
         cur.execute(
-            "UPDATE ItemTable SET value=? WHERE key=?",
-            (json.dumps(chat_idx, ensure_ascii=False), JSON_KEY),
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+            (JSON_KEY, json.dumps(chat_idx, ensure_ascii=False)),
         )
         Logger.success(f"JSON index updated: {entries_before} -> {entries_after} entries.")
 
