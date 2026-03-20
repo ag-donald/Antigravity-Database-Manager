@@ -28,3 +28,14 @@ venv/
 
 # Backups created by this tool
 *.agmercium_recovery_*
+backups/
+
+# Agent temporary files
+.agents/tmp/
+
+# Build artifacts
+dist/
+
+# Database files (should not be committed)
+*.vscdb
+*.golden_build

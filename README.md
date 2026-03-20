@@ -1,15 +1,15 @@
-# Antigravity IDE — Conversation History Recovery Tool
+# Antigravity IDE — Database Management Hub
 
 <p align="center">
   <a href="https://github.com/agmercium/antigravity-recovery/blob/main/LICENCE.md"><img src="https://img.shields.io/badge/License-Unlicense-blue.svg" alt="License: Unlicense"></a>
   <a href="https://github.com/agmercium/antigravity-recovery/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <a href="https://github.com/agmercium/antigravity-recovery"><img src="https://img.shields.io/badge/Open%20Source-100%25-green.svg" alt="Open Source: 100%"></a>
-  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.7+-blue.svg" alt="Python Version"></a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python Version"></a>
   <a href="https://github.com/agmercium/antigravity-recovery"><img src="https://img.shields.io/badge/Free-Forever-success.svg" alt="Free Forever"></a>
 </p>
 
 <p align="center">
-  <strong>An unofficial, open-source workaround for the Google Antigravity IDE conversation history loss bug.</strong>
+  <strong>An official, open-source database manager and recovery tool for the Google Antigravity IDE.</strong>
 </p>
 
 <p align="center">
@@ -78,7 +78,7 @@ The raw `.pb` data files at `~/.gemini/antigravity/conversations/` and brain art
 
 ### Prerequisites
 
-- **Python 3.7+** (ships with most operating systems)
+- **Python 3.10+** (ships with most operating systems)
 - **No external dependencies** — standard library only
 
 ### Steps
@@ -131,16 +131,28 @@ This tool:
 ### Architecture
 
 ```
-antigravity_recover.py        ← Thin entry point (invokes src.recovery.main)
+antigravity_recover.py        ← Thin entry point
 ├── src/
-│   ├── __init__.py           ← Package init, exposes VERSION
-│   ├── constants.py          ← All constants, DB keys, patterns, version
-│   ├── logger.py             ← Unified, severity-tagged console output
-│   ├── protobuf.py           ← Deterministic Protobuf Wire Format encoder
-│   ├── environment.py        ← Cross-platform path discovery (Win/Mac/Linux)
-│   ├── artifacts.py          ← Brain artifact title extraction
-│   ├── cli.py                ← Interactive CLI for project workspace registration
-│   └── recovery.py           ← 5-phase orchestration pipeline + safe_rollback()
+│   ├── core/                 ← Domain logic, models, and robust database operations
+│   │   ├── constants.py
+│   │   ├── models.py
+│   │   ├── protobuf.py
+│   │   ├── environment.py
+│   │   ├── artifacts.py
+│   │   ├── db_scanner.py
+│   │   ├── db_operations.py
+│   │   ├── diagnostic.py
+│   │   ├── storage_manager.py
+│   │   └── lifecycle.py
+│   ├── ui_tui/               ← Full-screen Terminal UI (MVU Architecture)
+│   │   ├── app.py
+│   │   ├── engine.py
+│   │   ├── widgets.py
+│   │   └── views.py
+│   └── ui_headless/          ← Command-line Interface and Interactive Prompts
+│       ├── cli_parser.py
+│       ├── controller.py
+│       └── logger.py
 ├── run.bat                   ← Windows CMD launcher
 ├── run.ps1                   ← Windows PowerShell launcher
 └── run.sh                    ← Linux / macOS launcher
@@ -150,6 +162,7 @@ antigravity_recover.py        ← Thin entry point (invokes src.recovery.main)
 
 | Phase | Description |
 |-------|-------------|
+| **0. Backup Scanner** | Discovers existing backups, displays comparison table, offers restore or proceed |
 | **1. Pre-flight Checks** | Verifies IDE is closed, database exists, permissions are correct |
 | **2. Conversation Discovery** | Scans for `.pb` files and counts recoverable conversations |
 | **3. Secure Backup** | Creates a timestamped copy of `state.vscdb` before any writes |
@@ -176,7 +189,7 @@ antigravity_recover.py        ← Thin entry point (invokes src.recovery.main)
 ```bash
 python antigravity_recover.py           # Interactive recovery
 python antigravity_recover.py --help    # Display help documentation
-python antigravity_recover.py --version # Display version number (v1.3.0)
+python antigravity_recover.py --version # Display version number (v8.5.0)
 ```
 
 ### Debug Mode

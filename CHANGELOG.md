@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [8.5.0] - 2026-03-20
+
+### Fixed
+- **CRITICAL: Zero Conversations Bug** — `extract_existing_metadata` in `db_scanner.py` unconditionally sliced entries to just the UUID field, discarding the entire Base64 payload. Added the missing conditional check so double-wrap detection only triggers when Field 1 truly consumes the entire entry.
+- **NameError in Protobuf encoder** — `build_trajectory_entry` referenced an undefined `parent_uuid` variable when patching existing entries with workspace data. Replaced with the correct `conv_uuid` parameter.
+- **Version inconsistencies** — Synchronized version strings across `constants.py` (was `8.0.0`), `antigravity_recover.py` (was `7.0.0`), and `README.md` (was `v2.0.0`).
+
+### Changed
+- Removed dead `import uuid` from `protobuf.py`
+- Updated `CONTRIBUTING.md` project structure to include `diagnostic.py` and `storage_manager.py`
+
+## [8.0.0] - 2026-03-19
+
+### Added
+- **Universal Corruption Diagnostic Engine** (`diagnostic.py`): Byte-level Protobuf scanner detecting ghost bytes (U+FFFD), double-wrapping, UUID mismatches, and invalid Field 15 wire types.
+- **Autonomous Repair Engine**: Auto-fixes detected corruptions (ghost byte stripping, double-wrap removal, UUID re-binding).
+- **Storage Manager** (`storage_manager.py`): Atomic read/write for `storage.json` with backup-first safety, recursive key flattening, and dotted-path patch/delete operations.
+- **RepairResult** data model for repair operation outcomes.
+
+### Changed
+- Protobuf encoder rebuilt with recursive tag-number sorting to prevent Field 9/10 ordering conflicts.
+- Windows path casing normalized to lowercase drive letters in `build_workspace_dict`.
+
+## [7.0.0] - 2026-03-19
+
+### Added
+- **Unified Database Manager Hub:** Complete architectural redesign of the TUI into a comprehensive split-pane database manager.
+- **Deep Inspection:** Added `ConversationBrowserView` and `ConversationDataView` to inspect raw JSON payloads inside databases natively.
+- **Safe Management:** Added support for safely deleting and renaming conversations directly from the interface.
+- **Headless Parity:** Full interactive CLI menu mirroring the TUI feature set, including Browse and Health Check menus.
+- **Robust Data Models:** Introduced immutable `ConversationEntry` and `HealthReport` dataclasses.
+
+### Changed
+- **Backup Strategy:** Forced pre-write safety backups for all destructive actions with descriptive reason suffixes (e.g., `_before_conv_del`).
+- **UI Architecture:** Flattened the menu-driven system into 6 core views with MVU layout architecture (`widgets.py` + `views.py`).
+
 ## [1.3.0] - 2026-03-19
 
 ### Added

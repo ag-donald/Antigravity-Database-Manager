@@ -3,29 +3,26 @@
 """
 ================================================================================
                            AGMERCIUM RECOVERY SUITE
-                     Antigravity IDE History Recovery Tool
+                     Antigravity IDE Database Management Hub
 ================================================================================
 
   Author:       Donald R. Johnson
   Organization: Agmercium (https://agmercium.com)
   License:      The Unlicense (Public Domain)
-  Version:      1.3.0
-  Python:       3.7+
+  Version:      8.5.0
+  Python:       3.10+
   Dependencies: None (standard library only)
 
-  A production-ready, enterprise-grade utility to securely rebuild the internal
-  SQLite UI indices of the Google Antigravity IDE from local Protobuf (.pb)
-  cache files.
-
-  This resolves the critical data-loss bug where the IDE fails to correctly
-  flush its JSON/Protobuf conversation indices during shutdown, resulting in
-  complete loss of UI history upon restart or update.
+  A production-ready, enterprise-grade utility to manage the internal SQLite
+  databases used by the Google Antigravity IDE. Features a world-class TUI,
+  headless CLI automation, and safety-first atomic operations.
 
   Usage:
-    1. Close the Antigravity IDE completely.
-    2. Run: python antigravity_recover.py
-    3. Follow the interactive prompts.
-    4. Restart the Antigravity IDE.
+    Interactive TUI:              python antigravity_recover.py
+    Headless interactive:         python antigravity_recover.py --headless
+    Direct commands:              python antigravity_recover.py scan
+                                  python antigravity_recover.py merge --source backup.vscdb
+                                  python antigravity_recover.py backup create
 
   For help:  python antigravity_recover.py --help
 
@@ -37,12 +34,41 @@
 
 from __future__ import annotations
 
-from src.recovery import main
-from src.logger import Logger
+import sys
+
+from src.core.lifecycle import ApplicationContext
+from src.ui_headless import cli_parser
+from src.ui_headless.controller import run_interactive
+
+
+def main() -> None:
+    """
+    Application entry point.
+
+    Routing logic:
+      1. If a subcommand is given (e.g., ``scan``, ``merge``), execute it headlessly.
+      2. If ``--headless`` is set or stdout is not a TTY, launch the interactive CLI.
+      3. Otherwise, launch the full-screen TUI.
+    """
+    with ApplicationContext() as ctx:
+        args = cli_parser.parse_args()
+
+        if cli_parser.has_subcommand(args):
+            # Direct headless command (e.g., `antigravity_recover.py scan`)
+            ctx.perform_preflight_checks()
+            exit_code = cli_parser.execute(args, ctx)
+            sys.exit(exit_code)
+
+        elif getattr(args, "headless", False) or not sys.stdout.isatty():
+            # Interactive headless fallback
+            exit_code = run_interactive(ctx)
+            sys.exit(exit_code)
+
+        else:
+            # Full-screen TUI
+            from src.ui_tui.app import App
+            App(ctx).run()
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print()
-        Logger.error("Interrupted by user.", fatal=True)
+    main()

@@ -1,4 +1,4 @@
-# Contributing to Antigravity IDE History Recovery Tool
+# Contributing to Antigravity IDE Database Management Hub
 
 Thank you for your interest in contributing! This project exists to help the community work around a known bug in the Google Antigravity IDE. All contributions are welcome.
 
@@ -48,16 +48,28 @@ Open an issue with the `enhancement` label describing:
 ### Project Structure
 
 ```
-antigravity_recover.py   ← Entry point (thin — imports src.recovery.main)
+antigravity_recover.py   ← Entry point
 src/
-├── __init__.py          ← Package init
-├── constants.py         ← Shared constants (VERSION, DB keys, patterns)
-├── logger.py            ← Logger class
-├── protobuf.py          ← ProtobufEncoder class
-├── environment.py       ← EnvironmentResolver class
-├── artifacts.py         ← ArtifactParser class
-├── cli.py               ← Interactive CLI prompts
-└── recovery.py          ← Core 5-phase pipeline
+├── core/                ← Domain logic, models, and robust database operations
+│   ├── constants.py
+│   ├── models.py
+│   ├── protobuf.py
+│   ├── environment.py
+│   ├── artifacts.py
+│   ├── db_scanner.py
+│   ├── db_operations.py
+│   ├── diagnostic.py
+│   ├── storage_manager.py
+│   └── lifecycle.py
+├── ui_tui/              ← Full-screen Terminal UI (MVU Architecture)
+│   ├── app.py
+│   ├── engine.py
+│   ├── widgets.py
+│   └── views.py
+└── ui_headless/         ← Command-line Interface and Interactive Prompts
+    ├── cli_parser.py
+    ├── controller.py
+    └── logger.py
 ```
 
 ### Commit Message Format
