@@ -9,7 +9,7 @@ import os
 # ==============================================================================
 # VERSION & IDENTITY
 # ==============================================================================
-VERSION = "8.5.0"
+VERSION = "8.5.1"
 APP_NAME = "Agmercium Antigravity IDE DB Manager"
 TOOL_NAME = "Agmercium Antigravity IDE Recovery Tool"
 AGMERCIUM_URL = "https://www.agmercium.com"

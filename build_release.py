@@ -28,17 +28,11 @@ def build_zipapp(dist_dir: str) -> str:
     # Create a staging directory
     staging = os.path.join(dist_dir, "_staging")
     if os.path.exists(staging):
-        shutil.rmtree(staging, ignore_errors=True)
-        if os.path.exists(staging):
-            # Force-remove read-only files (Windows __pycache__)
-            for root, dirs, files in os.walk(staging, topdown=False):
-                for f in files:
-                    fp = os.path.join(root, f)
-                    os.chmod(fp, 0o777)
-                    os.remove(fp)
-                for d in dirs:
-                    os.rmdir(os.path.join(root, d))
-            os.rmdir(staging)
+        def _force_remove(func, path, _exc_info):
+            """Handle read-only files on Windows."""
+            os.chmod(path, 0o777)
+            func(path)
+        shutil.rmtree(staging, onerror=_force_remove)
     os.makedirs(staging)
 
     # Copy source files (exclude __pycache__ and .pyc files)
@@ -60,7 +54,7 @@ def build_zipapp(dist_dir: str) -> str:
     zipapp.create_archive(
         staging,
         target=output_path,
-        interpreter="/usr/bin/env python3",
+        interpreter=None,  # Let system locate Python (cross-platform)
         compressed=True,
     )
 
