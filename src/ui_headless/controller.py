@@ -139,7 +139,7 @@ def _menu_restore(ctx: ApplicationContext) -> None:
         Logger.warn(f"Index out of range. Must be 1-{len(backup_snaps)}.")
         return
 
-    selected = snapshots[idx]
+    selected = backup_snaps[idx - 1]
     if selected.error:
         Logger.warn(f"That backup has an error: {selected.error}")
         return
@@ -176,19 +176,8 @@ def _menu_recover(ctx: ApplicationContext) -> None:
         _pause()
         return
 
-    # Workspace assignment prompt
-    ws_assignments: dict[str, dict[str, str]] = {}
-    print("  Workspace assignment mode:")
-    print("    [1] Auto-assign from brain artifacts (recommended)")
-    print("    [2] Skip workspace assignment")
-    try:
-        ws_choice = input("  Choice (1): ").strip()
-    except (KeyboardInterrupt, EOFError):
-        return
-
     result = ops.run_recovery_pipeline(
         ctx.db_path, ctx.convs_dir, ctx.brain_dir,
-        ws_assignments=ws_assignments,
         on_progress=lambda phase, msg: Logger.info(f"[{phase}] {msg}"),
     )
 
@@ -298,6 +287,30 @@ def _menu_backup(ctx: ApplicationContext) -> None:
     _pause()
 
 
+def _browse_conversation_detail(ctx: ApplicationContext, sel) -> None:
+    """Display detail and actions for a single conversation."""
+    Logger.header(f"Conversation: {sel.title}")
+    print(f"  UUID: {sel.uuid}")
+    print(f"  Workspace: {sel.workspace_uri}")
+    print(f"  Timestamps: {'Yes' if sel.has_timestamps else 'No'}")
+    print(f"  JSON Synced: {'Yes' if sel.json_synced else 'No'}")
+    print()
+    act = input("  [V]iew Payload  [D]elete  [R]ename  [Enter] Back: ").strip().lower()
+    if act == 'v':
+        print(ops.get_conversation_payload(ctx.db_path, sel.uuid))
+    elif act == 'd':
+        if ops.delete_conversation(ctx.db_path, sel.uuid):
+            Logger.success("Deleted successfully.")
+        else:
+            Logger.error("Failed to delete.")
+    elif act == 'r':
+        new_title = input("  New title: ").strip()
+        if new_title and ops.rename_conversation(ctx.db_path, sel.uuid, new_title):
+            Logger.success("Renamed successfully.")
+        else:
+            Logger.error("Failed to rename.")
+
+
 def _menu_browse(ctx: ApplicationContext) -> None:
     """Browse and manage conversations."""
     Logger.header("Browse Conversations")
@@ -312,36 +325,45 @@ def _menu_browse(ctx: ApplicationContext) -> None:
         print(f"  [{i+1:>2}] {c.uuid[:8]}...  {c.title[:40]}{ws_str}")
     
     if len(convs) > 20:
-        print(f"  ... and {len(convs) - 20} more.")
+        print(f"  ... and {len(convs) - 20} more. Enter 'n' to see next page.")
         
     print()
     try:
-        idx_str = input("  Select conversation # to inspect, or Enter to go back: ").strip()
+        idx_str = input("  Select conversation # to inspect, 'n' for next page, or Enter to go back: ").strip()
         if not idx_str:
             return
+        if idx_str.lower() == 'n' and len(convs) > 20:
+            # Show remaining conversations in pages of 20
+            page = 1
+            while page * 20 < len(convs):
+                start = page * 20
+                end = min(start + 20, len(convs))
+                for i, c in enumerate(convs[start:end], start=start):
+                    ws_str = f" [{c.workspace_uri}]" if c.workspace_uri else ""
+                    print(f"  [{i+1:>2}] {c.uuid[:8]}...  {c.title[:40]}{ws_str}")
+                if end < len(convs):
+                    print(f"  ... and {len(convs) - end} more.")
+                page_choice = input("  Select # to inspect, 'n' for next page, or Enter to go back: ").strip()
+                if not page_choice:
+                    _pause()
+                    return
+                if page_choice.lower() == 'n':
+                    page += 1
+                    continue
+                idx = int(page_choice) - 1
+                if 0 <= idx < len(convs):
+                    sel = convs[idx]
+                    _browse_conversation_detail(ctx, sel)
+                else:
+                    Logger.warn("Invalid selection.")
+                _pause()
+                return
+            _pause()
+            return
         idx = int(idx_str) - 1
-        if 0 <= idx < min(20, len(convs)):
+        if 0 <= idx < len(convs):
             sel = convs[idx]
-            Logger.header(f"Conversation: {sel.title}")
-            print(f"  UUID: {sel.uuid}")
-            print(f"  Workspace: {sel.workspace_uri}")
-            print(f"  Timestamps: {'Yes' if sel.has_timestamps else 'No'}")
-            print(f"  JSON Synced: {'Yes' if sel.json_synced else 'No'}")
-            print()
-            act = input("  [V]iew Payload  [D]elete  [R]ename  [Enter] Back: ").strip().lower()
-            if act == 'v':
-                print(ops.get_conversation_payload(ctx.db_path, sel.uuid))
-            elif act == 'd':
-                if ops.delete_conversation(ctx.db_path, sel.uuid):
-                    Logger.success("Deleted successfully.")
-                else:
-                    Logger.error("Failed to delete.")
-            elif act == 'r':
-                new_title = input("  New title: ").strip()
-                if new_title and ops.rename_conversation(ctx.db_path, sel.uuid, new_title):
-                    Logger.success("Renamed successfully.")
-                else:
-                    Logger.error("Failed to rename.")
+            _browse_conversation_detail(ctx, sel)
         else:
             Logger.warn("Invalid selection.")
     except (KeyboardInterrupt, EOFError, ValueError):

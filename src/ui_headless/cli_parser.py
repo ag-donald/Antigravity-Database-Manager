@@ -91,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     
     del_parser = conv_sub.add_parser("delete", help="Delete a conversation")
     del_parser.add_argument("uuid", help="Conversation UUID")
+    del_parser.add_argument("--force", "-f", action="store_true",
+                            help="Skip confirmation prompt")
     
     ren_parser = conv_sub.add_parser("rename", help="Rename a conversation")
     ren_parser.add_argument("uuid", help="Conversation UUID")
@@ -184,11 +186,27 @@ def _cmd_scan(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 def _cmd_recover(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     from .logger import Logger
-    Logger.banner()
+    use_json = getattr(args, "json", False)
+    if not use_json:
+        Logger.banner()
     result = ops.run_recovery_pipeline(
         ctx.db_path, ctx.convs_dir, ctx.brain_dir,
-        on_progress=lambda phase, msg: Logger.info(f"[{phase}] {msg}"),
+        on_progress=lambda phase, msg: (Logger.info(f"[{phase}] {msg}") if not use_json else None),
     )
+    if use_json:
+        import json as _json
+        print(_json.dumps({
+            "success": result.success,
+            "conversations_rebuilt": result.conversations_rebuilt,
+            "workspaces_mapped": result.workspaces_mapped,
+            "timestamps_injected": result.timestamps_injected,
+            "json_added": result.json_added,
+            "json_patched": result.json_patched,
+            "json_deleted": result.json_deleted,
+            "backup_path": result.backup_path or "",
+            "error": result.error or "",
+        }, indent=2))
+        return 0 if result.success else 1
     if result.success:
         Logger.header("Recovery Complete")
         Logger.success(f"Conversations rebuilt:  {result.conversations_rebuilt}")
@@ -319,6 +337,15 @@ def _cmd_conversations(args: argparse.Namespace, ctx: ApplicationContext) -> int
         return 0
         
     elif action == "delete":
+        force = getattr(args, "force", False)
+        if not force:
+            try:
+                confirm = input(f"Delete conversation {args.uuid}? (y/N): ").strip().lower()
+                if confirm != "y":
+                    Logger.info("Cancelled.")
+                    return 0
+            except (KeyboardInterrupt, EOFError):
+                return 0
         if ops.delete_conversation(ctx.db_path, args.uuid):
             Logger.success(f"Conversation {args.uuid} deleted.")
             return 0
