@@ -97,6 +97,8 @@ def restore_backup(backup_path: str, target_path: str) -> RestoreResult:
     2. Copies the backup directly over the live file via ``shutil.copy2()``.
     """
     safety_path = ""
+    if not os.path.isfile(backup_path):
+        return RestoreResult(success=False, error=f"Backup file not found: {backup_path}")
     try:
         # 1. Safety snapshot of current DB before overwriting
         if os.path.isfile(target_path):
@@ -142,6 +144,7 @@ def create_empty_db(target_path: str) -> bool:
 def _extract_conversation_ids(db_path: str) -> set[str]:
     """Extracts all conversation UUIDs from a database's PB blob."""
     ids: set[str] = set()
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         cur = conn.cursor()
@@ -151,9 +154,14 @@ def _extract_conversation_ids(db_path: str) -> set[str]:
             decoded = base64.b64decode(row[0])
             _, inner_blobs = extract_existing_metadata(decoded)
             ids = set(inner_blobs.keys())
-        conn.close()
     except Exception:
         pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return ids
 
 
@@ -206,6 +214,8 @@ def execute_merge(source_path: str, target_path: str,
     except OSError as exc:
         return MergeResult(success=False, error=f"Backup failed: {exc}")
 
+    src_conn = None
+    tgt_conn = None
     try:
         # 2. Read source PB + JSON (read-only connection)
         src_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True, timeout=5)
@@ -219,7 +229,6 @@ def execute_merge(source_path: str, target_path: str,
         src_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
         src_json_row = src_cur.fetchone()
         src_json = json.loads(src_json_row[0]) if (src_json_row and src_json_row[0]) else {"version": 1, "entries": {}}
-        src_conn.close()
 
         # 3. Open target for read-write
         tgt_conn = sqlite3.connect(target_path, timeout=10)
@@ -290,12 +299,18 @@ def execute_merge(source_path: str, target_path: str,
         )
 
         tgt_conn.commit()
-        tgt_conn.close()
 
         return MergeResult(success=True, added=added, updated=updated,
                           skipped=skipped, backup_path=backup_path)
     except Exception as exc:
         return MergeResult(success=False, error=str(exc), backup_path=backup_path)
+    finally:
+        for c in (src_conn, tgt_conn):
+            if c:
+                try:
+                    c.close()
+                except Exception:
+                    pass
 
 
 def execute_selective_merge(source_path: str, target_path: str,
@@ -305,12 +320,16 @@ def execute_selective_merge(source_path: str, target_path: str,
     Cherry-pick merge: only merges the specified conversation UUIDs from source into target.
     Uses the same backup-first + ACID strategy as ``execute_merge``.
     """
+    if not selected_uuids:
+        return MergeResult(success=True, added=0, updated=0, skipped=0)
     backup_path = ""
     try:
         backup_path = create_backup(target_path, reason="before_merge")
     except OSError as exc:
         return MergeResult(success=False, error=f"Backup failed: {exc}")
 
+    src_conn = None
+    tgt_conn = None
     try:
         src_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True, timeout=5)
         src_cur = src_conn.cursor()
@@ -323,7 +342,6 @@ def execute_selective_merge(source_path: str, target_path: str,
         src_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
         src_json_row = src_cur.fetchone()
         src_json = json.loads(src_json_row[0]) if (src_json_row and src_json_row[0]) else {"version": 1, "entries": {}}
-        src_conn.close()
 
         tgt_conn = sqlite3.connect(target_path, timeout=10)
         tgt_cur = tgt_conn.cursor()
@@ -395,12 +413,18 @@ def execute_selective_merge(source_path: str, target_path: str,
         )
 
         tgt_conn.commit()
-        tgt_conn.close()
 
         return MergeResult(success=True, added=added, updated=updated,
                           skipped=skipped, backup_path=backup_path)
     except Exception as exc:
         return MergeResult(success=False, error=str(exc), backup_path=backup_path)
+    finally:
+        for c in (src_conn, tgt_conn):
+            if c:
+                try:
+                    c.close()
+                except Exception:
+                    pass
 
 
 # ==============================================================================
@@ -488,18 +512,24 @@ def run_recovery_pipeline(
 
     existing_titles: dict[str, str] = {}
     existing_inner_blobs: dict[str, bytes] = {}
+    meta_conn = None
     try:
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
+        meta_conn = sqlite3.connect(db_path)
+        cur = meta_conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key=?", (PB_KEY,))
         row = cur.fetchone()
-        conn.close()
 
         if row and row[0]:
             decoded = base64.b64decode(row[0])
             existing_titles, existing_inner_blobs = extract_existing_metadata(decoded)
     except Exception:
         pass
+    finally:
+        if meta_conn:
+            try:
+                meta_conn.close()
+            except Exception:
+                pass
 
     # Auto-assign workspaces from brain artifacts
     for cid in all_pbs:
@@ -738,6 +768,8 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
     """Safely renames a conversation in both JSON and PB indices."""
     if not os.path.isfile(db_path):
         return False
+    if not new_title or not new_title.strip():
+        return False
     conn = None
     try:
         create_backup(db_path, reason="before_conv_rename")
@@ -789,6 +821,8 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
 def migrate_workspace(db_path: str, new_workspace_path: str) -> bool:
     """Migrates all conversations in the database to a new workspace path."""
     if not os.path.isfile(db_path):
+        return False
+    if not new_workspace_path or not new_workspace_path.strip():
         return False
     conn = None
     try:
@@ -869,16 +903,22 @@ def repair_database(db_path: str) -> RepairResult:
     except OSError as exc:
         return RepairResult(success=False, error=f"Backup failed: {exc}")
 
+    read_conn = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
-        cur = conn.cursor()
+        read_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        cur = read_conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()
-        conn.close()
 
         decoded = base64.b64decode(row[0])
     except Exception as exc:
         return RepairResult(success=False, error=f"Read failed: {exc}", backup_path=backup_path)
+    finally:
+        if read_conn:
+            try:
+                read_conn.close()
+            except Exception:
+                pass
 
     # Build set of corrupt UUIDs
     corrupt_uuids = {e.uuid for e in report.entry_diagnostics if e.is_corrupt or e.has_warnings}

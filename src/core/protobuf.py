@@ -22,6 +22,8 @@ class ProtobufEncoder:
     @staticmethod
     def write_varint(v: int) -> bytes:
         """Encode a non-negative integer as a Protobuf base-128 varint."""
+        if v < 0:
+            raise ValueError(f"Cannot encode negative varint: {v}")
         if v == 0:
             return b"\x00"
         result = bytearray()

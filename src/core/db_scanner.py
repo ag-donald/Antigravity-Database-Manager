@@ -221,6 +221,7 @@ def scan_database(db_path: str, label: str, is_current: bool = False) -> Databas
     except Exception as e:
         return DatabaseSnapshot(db_path, label, 0, 0, 0, 0, 0, 0, is_current, error=f"Stat error: {e}")
 
+    conn = None
     try:
         db_uri = f"file:{db_path}?mode=ro"
         conn = sqlite3.connect(db_uri, uri=True, timeout=5)
@@ -253,8 +254,6 @@ def scan_database(db_path: str, label: str, is_current: bool = False) -> Databas
             except Exception:
                 pass
 
-        conn.close()
-
         return DatabaseSnapshot(
             path=db_path,
             label=label,
@@ -268,6 +267,12 @@ def scan_database(db_path: str, label: str, is_current: bool = False) -> Databas
         )
     except Exception as e:
         return DatabaseSnapshot(db_path, label, size_bytes, modified_at, 0, 0, 0, 0, is_current, error=f"DB error: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def health_check(snapshot: DatabaseSnapshot) -> HealthReport:
@@ -304,6 +309,7 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
     if not os.path.isfile(db_path):
         return []
 
+    conn = None
     try:
         db_uri = f"file:{db_path}?mode=ro"
         conn = sqlite3.connect(db_uri, uri=True, timeout=5)
@@ -326,7 +332,6 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
                 json_entries = j_obj.get("entries", {})
             except Exception:
                 pass
-        conn.close()
 
         results = []
         for uid, raw_inner in inner_blobs.items():
@@ -353,6 +358,12 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
         return results
     except Exception:
         return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def discover_backups(db_dir: str) -> list[str]:

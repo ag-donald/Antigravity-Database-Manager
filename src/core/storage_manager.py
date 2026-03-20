@@ -100,10 +100,23 @@ def patch_key(data: dict[str, Any], json_path: str, value: Any) -> dict[str, Any
     """
     Updates a nested key by dotted path. Returns the mutated data dict.
 
+    If ``value`` is a string, attempts to parse it as a JSON primitive
+    (boolean, number, null) so that typed values are stored correctly.
+
     Example: ``patch_key(data, "ui.theme.foreground", "#ffffff")``
     """
     parts = json_path.split(".")
     parent, final_key = _resolve_path(data, parts)
+    # Coerce string values to their native JSON types when possible
+    if isinstance(value, str):
+        try:
+            import json
+            parsed = json.loads(value)
+            # Only coerce scalars, not dicts/lists (which would be surprising)
+            if isinstance(parsed, (bool, int, float)) or parsed is None:
+                value = parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
     if isinstance(parent, dict):
         parent[final_key] = value
     return data
