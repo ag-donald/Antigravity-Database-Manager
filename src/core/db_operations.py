@@ -118,15 +118,21 @@ def create_empty_db(target_path: str) -> bool:
     Returns:
         True on success, False on failure.
     """
+    conn = None
     try:
         conn = sqlite3.connect(target_path)
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)")
         conn.commit()
-        conn.close()
         return True
     except Exception:
         return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ==============================================================================
@@ -678,12 +684,13 @@ def delete_conversation(db_path: str, conv_uuid: str) -> bool:
     """Safely removes a single conversation from PB and JSON indices."""
     if not os.path.isfile(db_path):
         return False
+    conn = None
     try:
         create_backup(db_path, reason="before_conv_del")
-        
+
         conn = sqlite3.connect(db_path, timeout=10)
         cur = conn.cursor()
-        
+
         # 1. Update JSON
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
         j_row = cur.fetchone()
@@ -691,16 +698,16 @@ def delete_conversation(db_path: str, conv_uuid: str) -> bool:
             j_obj = json.loads(j_row[0])
             if "entries" in j_obj and conv_uuid in j_obj["entries"]:
                 del j_obj["entries"][conv_uuid]
-                cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", 
+                cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?",
                            (json.dumps(j_obj, ensure_ascii=False), JSON_KEY))
-        
+
         # 2. Update PB
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         pb_row = cur.fetchone()
         if pb_row and pb_row[0]:
             decoded = base64.b64decode(pb_row[0])
             titles, inner_blobs = extract_existing_metadata(decoded)
-            
+
             if conv_uuid in inner_blobs:
                 result_bytes = b""
                 for cid, blob in inner_blobs.items():
@@ -711,28 +718,33 @@ def delete_conversation(db_path: str, conv_uuid: str) -> bool:
                         cid, title, None, int(time.time()), int(time.time()), existing_inner_data=blob
                     )
                     result_bytes += entry
-                
+
                 encoded_pb = base64.b64encode(result_bytes).decode("utf-8")
                 cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
-                
+
         conn.commit()
-        conn.close()
         return True
     except Exception:
-        pass
-    return False
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
     """Safely renames a conversation in both JSON and PB indices."""
     if not os.path.isfile(db_path):
         return False
+    conn = None
     try:
         create_backup(db_path, reason="before_conv_rename")
-        
+
         conn = sqlite3.connect(db_path, timeout=10)
         cur = conn.cursor()
-        
+
         # 1. Update JSON
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
         j_row = cur.fetchone()
@@ -740,16 +752,16 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
             j_obj = json.loads(j_row[0])
             if "entries" in j_obj and conv_uuid in j_obj["entries"]:
                 j_obj["entries"][conv_uuid]["title"] = new_title
-                cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", 
+                cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?",
                            (json.dumps(j_obj, ensure_ascii=False), JSON_KEY))
-        
+
         # 2. Update PB
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         pb_row = cur.fetchone()
         if pb_row and pb_row[0]:
             decoded = base64.b64decode(pb_row[0])
             titles, inner_blobs = extract_existing_metadata(decoded)
-            
+
             if conv_uuid in inner_blobs:
                 result_bytes = b""
                 for cid, blob in inner_blobs.items():
@@ -758,55 +770,64 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
                         cid, title, None, int(time.time()), int(time.time()), existing_inner_data=blob
                     )
                     result_bytes += entry
-                
+
                 encoded_pb = base64.b64encode(result_bytes).decode("utf-8")
                 cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
-                
+
         conn.commit()
-        conn.close()
         return True
     except Exception:
-        pass
-    return False
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def migrate_workspace(db_path: str, new_workspace_path: str) -> bool:
     """Migrates all conversations in the database to a new workspace path."""
     if not os.path.isfile(db_path):
         return False
+    conn = None
     try:
         create_backup(db_path, reason="before_ws_migrate")
-        
+
         conn = sqlite3.connect(db_path, timeout=10)
         cur = conn.cursor()
-        
+
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         pb_row = cur.fetchone()
-        
+
         if pb_row and pb_row[0]:
             decoded = base64.b64decode(pb_row[0])
             titles, inner_blobs = extract_existing_metadata(decoded)
-            
+
             ws_map = build_workspace_dict(new_workspace_path)
             result_bytes = b""
-            
+
             for cid, blob in inner_blobs.items():
                 title = titles.get(cid, f"Conversation {cid[:8]}")
                 entry = ProtobufEncoder.build_trajectory_entry(
                     cid, title, ws_map, int(time.time()), int(time.time()), existing_inner_data=blob
                 )
                 result_bytes += entry
-                
+
             encoded_pb = base64.b64encode(result_bytes).decode("utf-8")
             cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
-            
+
             conn.commit()
-            
-        conn.close()
+
         return True
     except Exception:
-        pass
-    return False
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ==============================================================================

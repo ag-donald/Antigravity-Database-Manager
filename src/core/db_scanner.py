@@ -96,7 +96,6 @@ def extract_existing_metadata(decoded: bytes) -> tuple[dict[str, str], dict[str,
                 break
 
         if uid and info_b64:
-            assert info_b64 is not None
             try:
                 raw_inner = base64.b64decode(info_b64)
                 inner_blobs[uid] = raw_inner
@@ -333,7 +332,7 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
         for uid, raw_inner in inner_blobs.items():
             title = titles.get(uid, "(Untitled)")
             workspace_uri = ""
-            has_timestamps = b"\\x08\\x01\\x10" in raw_inner or b"\\x08\\x02\\x10" in raw_inner
+            has_timestamps = ProtobufEncoder.has_timestamp_fields(raw_inner)
             
             workspace_uri = extract_workspace_uri(raw_inner)
 

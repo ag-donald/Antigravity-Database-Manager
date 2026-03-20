@@ -29,7 +29,7 @@ Open an issue with the `enhancement` label describing:
 4. Ensure all modules pass syntax validation:
    ```bash
    python -m py_compile antigravity_database_manager.py
-   python -c "from src.recovery import main"  # validates all src/ imports
+   python -c "from src.core.lifecycle import ApplicationContext"  # validates all src/ imports
    ```
 5. Test on your platform (Windows, macOS, or Linux)
 6. Commit your changes: `git commit -m "Add: description of change"`
