@@ -24,208 +24,44 @@
 
 ---
 
-## The Bug(s)
+## The Bug
 
-Google Antigravity IDE (a heavily modified VS Code fork powering agent-first AI development) suffers from **multiple related bugs** that cause conversation history to disappear from the UI sidebar. The underlying `.pb` conversation data files remain **fully intact** on disk at `~/.gemini/antigravity/conversations/`, but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically the `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — causing the sidebar to display zero history.
+Google Antigravity IDE (a heavily modified VS Code fork powering agent-first AI development) has a recurring bug where **all conversation history disappears** from the UI sidebar after:
+
+- Updating the IDE to a new version
+- Restarting the application
+- Power outages or unclean shutdowns
+- Certain workspace/session transitions
+
+The underlying `.pb` conversation data files remain **fully intact** on disk at `~/.gemini/antigravity/conversations/`, but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically the `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — causing the sidebar to display zero history.
 
 **This tool rebuilds those internal indices from your intact `.pb` files, restoring your full conversation history.**
 
-Below is a comprehensive catalog of every known failure mode, the technical root cause, and how this Database Manager solves each one.
+### Community Bug Reports
 
----
+This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We have cataloged **11 distinct bug categories** with verified community reports, technical root cause analysis, and how this Database Manager solves each one:
 
-### 🐛 Bug #1 — IDE Update Index Wipe
+📋 **[Full Bug Catalog → BUGS.md](BUGS.md)**
 
-The most commonly reported bug. Both internal indices (`ChatSessionStore.index` and `trajectorySummaries`) are silently reset to empty during or immediately after an IDE version update.
+| # | Bug | Trigger |
+|---|-----|---------|
+| 1 | IDE Update Index Wipe | IDE version update resets indices to empty |
+| 2 | Power Outage Corruption | Non-atomic flush during unclean shutdown |
+| 3 | Workspace Rebinding Loss | Project folder moved, renamed, or path changed |
+| 4 | SSH Remote Session Loss | Switching between local and remote contexts |
+| 5 | Agent Manager Self-Deletion | Protobuf parsing error silently drops entries |
+| 6 | Protobuf Field Ordering | Out-of-order fields rejected by strict parser |
+| 7 | Windows Path Casing | Drive letter `H:` vs `h:` mismatch |
+| 8 | Long-Context Truncation | Large conversations exceed rendering limits |
+| 9 | Ghost Bytes / Double-Wrapping | Encoding corruption in Protobuf blob |
+| 10 | storage.json Desync | Three parallel data stores fall out of sync |
+| 11 | Scratch Session Disabled | Workspace-less conversations hidden after upgrade |
 
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Updating the IDE to a new version (v1.18.x → v1.19.x, v1.20.x, etc.) |
-| **Symptoms** | All conversations vanish from the sidebar immediately after update. `.pb` files remain on disk untouched. |
-| **Root Cause** | The IDE's update migration pipeline does not preserve the `state.vscdb` key `chat.ChatSessionStore.index` — it re-initializes to `{"version":1,"entries":{}}`. The Protobuf `trajectorySummaries` blob is also zeroed. |
-| **Our Fix** | Full 6-phase recovery pipeline scans `.pb` files, extracts titles from brain artifacts, and rebuilds both indices byte-accurately. |
+### Root Cause
 
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| [Chat history lost after Antigravity update — ChatSessionStore index reset](https://discuss.ai.google.dev/t/bug-chat-history-lost-after-antigravity-update-chatsessionstore-index-reset-to-empty/125625) | Daichi_Zaha | Google Dev Forum |
-| [Conversations Corrupted & Unrecoverable + Export Broken (macOS)](https://discuss.ai.google.dev/t/bug-critical-v1-20-5-conversations-corrupted-unrecoverable-export-broken-macos/130547) | jc-myths | Google Dev Forum |
-| [Chat history completely disabled/lost for "scratch" sessions after upgrade](https://discuss.ai.google.dev/t/bug-help-antigravity-1-18-x-1-19-x-chat-history-completely-disabled-lost-for-scratch-sessions-after-upgrading-from-1-16-5/127132) | Red_Tom | Google Dev Forum |
-| [Lost conversation history with early update](https://discuss.ai.google.dev/t/i-have-lost-conversation-history-in-the-with-early-update-app/124337) | Bun_Zie | Google Dev Forum |
-| [Fix if you lost your session history with the new upgrade](https://discuss.ai.google.dev/t/fix-if-you-lost-your-session-history-with-the-new-upgrade-per-antigravity/127105) | Jimmy_Harrell | Google Dev Forum |
+All 11 bugs stem from the IDE's failure to atomically flush its internal indices during shutdown:
 
----
-
-### 🐛 Bug #2 — Power Outage / Unclean Shutdown Corruption
-
-The IDE performs a non-atomic flush of its two indices during shutdown. If the process is interrupted, the indices are written in an inconsistent state.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Power outage, SIGKILL, force-quit, OS crash, or any unclean IDE termination |
-| **Symptoms** | Some or all conversations disappear. JSON index may be partially written (truncated JSON). Protobuf blob may be empty or contain orphaned entries. |
-| **Root Cause** | The IDE writes `ChatSessionStore.index` and `trajectorySummaries` as separate, non-transactional SQLite updates. If the process dies between writes, one or both can be in an inconsistent state. |
-| **Our Fix** | Recovery pipeline rebuilds both indices atomically from the source-of-truth `.pb` files. Diagnostic engine detects and repairs partial writes. |
-
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| [Conversation history lost after power outage — v1.20.5](https://discuss.ai.google.dev/t/bug-conversation-history-lost-after-power-outage-v1-20-5/133550) | MishaSER | Google Dev Forum |
-| [Critical Regression — Chat Freeze, History Loss (Windows 10)](https://discuss.ai.google.dev/t/critical-regression-in-latest-antigravity-version-chat-freeze-conversation-history-loss-pro-plan-limit-concerns-windows-10/125651) | ANURAJ_RAI | Google Dev Forum |
-
----
-
-### 🐛 Bug #3 — Workspace Rebinding / Project Switch Loss
-
-Conversations are scoped to workspace URIs. When a project folder is moved, renamed, or re-opened via a different path, the workspace URI changes and previously-bound conversations become orphaned.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Moving project folder, opening via different path, drive letter change (e.g., `H:` vs `h:` on Windows) |
-| **Symptoms** | Sidebar shows conversations from a different workspace or shows no conversations. Conversations still exist but are bound to the old workspace URI. |
-| **Root Cause** | The `trajectorySummaries` Protobuf stores a `workspace_uri` inside Field 9 of each entry. When the URI changes, the IDE's renderer filters out entries that don't match the current workspace. On Windows, drive letter casing differences (`H:` vs `h:`) create a permanent mismatch. |
-| **Our Fix** | `workspace migrate` subcommand rebinds all conversations from an old URI to a new one. Recovery pipeline normalizes drive letters to lowercase. |
-
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| [Missing conversations (wrong workspace display)](https://discuss.ai.google.dev/t/missing-conversations/127818) | jnchacon | Google Dev Forum |
-| Multiple threads on r/GoogleAntigravityIDE | Various | Reddit |
-
----
-
-### 🐛 Bug #4 — SSH Remote Development Session Loss
-
-Conversations created during SSH remote development sessions behave differently from local sessions and are frequently lost or invisible when switching between local and remote contexts.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Starting/stopping SSH remote sessions, switching between local and remote workspaces, remote server reboot |
-| **Symptoms** | Conversations created in SSH sessions are invisible in local mode, and vice versa. Some conversations have workspace URIs prefixed with `vscode-remote://` which are unavailable locally. |
-| **Root Cause** | The IDE stores remote workspace URIs as `vscode-remote://ssh-remote+host/path/to/project` which may not resolve when working locally. The `state.vscdb` may also be on the remote machine, not synced to local. |
-| **Our Fix** | Full scan detects all `.pb` files regardless of workspace binding. `scan` subcommand reports workspace URI mismatches. `workspace migrate` can rebind remote URIs to local equivalents. |
-
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| [Missing conversation in IDE (SSH)](https://discuss.ai.google.dev/t/missing-conversation-in-ide-ssh/130852/4) | Dark2002 | Google Dev Forum |
-| SSH remote IPv6 connectivity & session issues | Various | Google Dev Forum |
-
----
-
-### 🐛 Bug #5 — Agent Manager UI Load Error Self-Deletion
-
-The Agent Manager chat window "self-deletes" conversations when it encounters a load error, even though the underlying agent and conversation data survive in the workspace.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Agent Manager encounters a Protobuf parsing error, schema mismatch, or corrupted field during conversation load |
-| **Symptoms** | Conversation tile disappears from the Agent Manager UI. Agent state files remain on disk. No user-facing error message — silent deletion. |
-| **Root Cause** | The IDE's Protobuf parser silently discards entries it cannot decode rather than displaying an error. If a single field is malformed (e.g., Field 15 with invalid wire type), the entire entry is dropped from the rendered list. |
-| **Our Fix** | Diagnostic engine performs byte-level Protobuf validation to detect ghost bytes, invalid wire types, and field ordering issues. Repair engine autonomously fixes malformed entries. Recovery pipeline re-creates clean Protobuf entries from the `.pb` source data. |
-
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| [Agent Manager chat window "self-deletes" on load error](https://discuss.ai.google.dev/t/bug-agent-manager-chat-window-self-deletes-on-load-error-but-agent-survives-in-workspace/114186) | Shannon_Green | Google Dev Forum |
-
----
-
-### 🐛 Bug #6 — Protobuf Field Ordering / Schema Conflict
-
-The IDE's strict `ChatSessionStore` Protobuf parser expects fields in ascending tag number order. If fields are written out of order (e.g., Field 10 before Field 9), the entire entry is silently rejected.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Recovery tools or manual database edits that write Protobuf fields in non-canonical order |
-| **Symptoms** | Conversations appear recovered in the JSON index but remain invisible in the sidebar. `trajectorySummaries` contains entries that pass basic validation but fail the IDE's strict parser. |
-| **Root Cause** | The IDE's native parser does not implement the Protobuf specification's "fields may appear in any order" rule. Instead, it uses a strict ascending-tag parser that rejects out-of-order fields. Our prior recovery version had Field 10 (last_accessed) emitted before Field 9 (workspace). |
-| **Our Fix** | Protobuf encoder (`protobuf.py`) recursively sorts all fields by ascending tag number before serialization. Diagnostic engine validates tag ordering. |
-
----
-
-### 🐛 Bug #7 — Windows Path Casing Mismatch
-
-On Windows, drive letters in workspace URIs can be uppercase (`H:`) or lowercase (`h:`), creating a string-level mismatch even though the paths resolve to the same location.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Different tools or sessions opening the same project with different drive letter casing (e.g., `H:\project` vs `h:\project`) |
-| **Symptoms** | History appears for some sessions but not others. `workspace list` shows duplicate entries for the same physical folder. Conversations are split across different workspace bindings. |
-| **Root Cause** | The IDE stores workspace URIs as verbatim strings with no normalization. `file:///H:/project` and `file:///h:/project` are treated as completely different workspaces. |
-| **Our Fix** | `build_workspace_dict` enforces lowercase drive letters in all generated URIs. Workspace migration consolidates duplicate entries. |
-
----
-
-### 🐛 Bug #8 — Long-Context Conversation Truncation
-
-Extended, deep-context conversations (multi-day agentic sessions with hundreds of steps) can exceed internal buffer limits, causing the conversation to become partially or fully unrenderable in the UI.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Conversations with 100+ agent steps, large tool outputs, or extended multi-day sessions |
-| **Symptoms** | Conversation loads but shows only the first N messages, or fails to load entirely with a blank chat window. The `.pb` file is large (10+ MB) and intact. |
-| **Root Cause** | Backend UI rendering cannot process extremely large Protobuf payloads. The sidebar's trajectory summary may also have truncated or zero step counts, causing the IDE to skip the entry. |
-| **Our Fix** | Recovery injects accurate step counts from `.pb` file analysis. Health check reports conversation sizes. Diagnostic engine flags entries with suspicious zero-step counts. |
-
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| Long-context "truncation glitch" discussions | Various | Reddit, Google Dev Forum |
-
----
-
-### 🐛 Bug #9 — Ghost Bytes and Double-Wrapping Corruption
-
-The `trajectorySummaries` Protobuf blob can accumulate structural corruptions: ghost bytes (U+FFFD replacement characters), double-wrapped Field 1 entries, or orphaned padding where the Field 1 tag consumes the entire entry with no payload.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Repeated recovery attempts, non-atomic writes during crashes, character encoding mismatches during IDE updates |
-| **Symptoms** | Recovery appears to succeed but conversations still don't appear. Database contains entries but the IDE's parser rejects them silently. |
-| **Root Cause** | UTF-8/UTF-16 encoding boundaries can inject replacement characters (U+FFFD) into the binary Protobuf blob. Double-wrapping occurs when a previous recovery tool wraps an already-valid Field 1 entry inside another Field 1, creating a nested structure the IDE cannot parse. |
-| **Our Fix** | Universal Corruption Diagnostic Engine performs byte-level scanning for ghost bytes, double-wrapping, UUID mismatches, and invalid wire types. Autonomous Repair Engine strips corruptions and rebuilds clean entries. |
-
----
-
-### 🐛 Bug #10 — `storage.json` / Protobuf Index Desynchronization
-
-The IDE maintains three parallel data structures — `storage.json`, the JSON index, and the Protobuf blob — that can fall out of sync with each other, causing inconsistent state.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Partial writes, concurrent access, IDE crashes mid-operation, or manual database editing |
-| **Symptoms** | Conversations appear in the sidebar but load as blank. Or conversations have titles in the sidebar but no workspace binding. Or `storage.json` references conversations that don't exist in the Protobuf index. |
-| **Root Cause** | The three data stores are updated independently without a single transaction boundary. A crash between any two writes leaves them out of sync. |
-| **Our Fix** | `storage inspect` subcommand reports the state of `storage.json`. Health check cross-validates all three data stores. Recovery pipeline writes all indices atomically from a single source of truth (the `.pb` files). |
-
----
-
-### 🐛 Bug #11 — "Scratch" Session History Disabled After Upgrade
-
-Conversations created in scratchpad / non-project contexts are completely inaccessible after upgrading from older IDE versions (e.g., v1.16.5 → v1.18.x+). The UI displays a red "disabled" icon next to the history panel.
-
-| Detail | Description |
-|--------|-------------|
-| **Trigger** | Upgrading from IDE versions ≤ v1.16.5 to v1.18.x or later |
-| **Symptoms** | History panel shows a red "disabled" icon for scratch sessions. No conversations are accessible, even through the Agent Manager. `.pb` files exist on disk with valid data. |
-| **Root Cause** | The v1.18.x update changed how workspace-less ("scratch") conversations are indexed. Conversations without a workspace binding are no longer rendered by the new UI. The migration pathway does not backfill workspace data for existing scratch conversations. |
-| **Our Fix** | Recovery pipeline uses workspace auto-inference (parsing `file:///` URLs in brain artifacts) to retroactively bind orphaned conversations to the correct workspace. Interactive batch assignment handles unmapped conversations. |
-
-| Community Reports | Author | Source |
-|-------------------|--------|--------|
-| [Chat history completely disabled/lost for "scratch" sessions](https://discuss.ai.google.dev/t/bug-help-antigravity-1-18-x-1-19-x-chat-history-completely-disabled-lost-for-scratch-sessions-after-upgrading-from-1-16-5/127132) | Red_Tom | Google Dev Forum |
-
----
-
-### Community Sources Summary
-
-| Platform | Thread Count | Notable Topics |
-|----------|-------------|----------------|
-| **Google AI Dev Forum** | 10+ verified | Index reset after update, power outage corruption, SSH session loss, Agent Manager self-deletion, scratch session disabled |
-| **Reddit** (r/GoogleAntigravityIDE, r/google_antigravity) | 5+ threads | Random history disappearance, workspace re-binding workarounds, version rollback discussions, long-context truncation |
-| **GitHub** | 3+ issues | Gemini CLI history loss after tool updates, token limit restarts, gemini-chat-history.bin recovery |
-| **YouTube** | 2+ videos | Gemini 3.1 update history wipe walkthrough, Google One support acknowledgment |
-
-### Technical Root Cause
-
-All 11 bugs stem from the same fundamental architectural flaw: the IDE's failure to atomically manage its three internal state stores:
-
-1. **`chat.ChatSessionStore.index`** (JSON) — Gets reset to `{"version":1,"entries":{}}` on failure
+1. **`chat.ChatSessionStore.index`** (JSON) — Gets reset to `{"version":1,"entries":{}}` 
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — Loses UUID-to-conversation mappings
 3. **`storage.json`** — Workspace binding metadata falls out of sync
 
@@ -333,19 +169,285 @@ build_release.py              ← Builds the cross-platform .pyz zipapp
 
 ---
 
-## CLI Options
+## Usage
+
+This tool provides **three interfaces** — choose whichever fits your workflow:
+
+| Interface | Launch Command | Best For |
+|-----------|---------------|----------|
+| **Full-Screen TUI** | `python antigravity_database_manager.py` | Interactive exploration, visual browsing |
+| **Headless Interactive** | `python antigravity_database_manager.py --headless` | Terminals without TUI support, SSH sessions |
+| **CLI Subcommands** | `python antigravity_database_manager.py <command>` | Scripting, CI/CD automation, one-shot tasks |
+
+---
+
+### Full-Screen TUI (Terminal User Interface)
+
+Launch with no arguments to enter the full-screen split-pane database manager:
 
 ```bash
-python antigravity_database_manager.py           # Interactive TUI (full-screen database manager)
-python antigravity_database_manager.py --headless # Headless interactive mode (no TUI)
-python antigravity_database_manager.py scan      # Scan current DB and all backups
-python antigravity_database_manager.py recover   # Run the full 6-phase recovery pipeline
-python antigravity_database_manager.py health    # Run a health check on the current database
-python antigravity_database_manager.py diagnose  # Scan database for Protobuf structural corruptions
-python antigravity_database_manager.py repair    # Autonomously repair detected corruptions
-python antigravity_database_manager.py --help    # Display help documentation
-python antigravity_database_manager.py --version # Display version number (v8.5.0)
+python antigravity_database_manager.py
 ```
+
+The TUI uses an **MVU (Model-View-Update) architecture** with 8 screens:
+
+#### 1. Home — Database Dashboard
+
+The default landing screen. Shows a split pane with all databases (current + backups) on the left and a health report on the right.
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Navigate between databases |
+| `Enter` | Open the Action Menu for the selected database |
+| `S` | Refresh scan (re-scan all databases) |
+| `B` | Create a manual backup of the selected database |
+| `R` | Jump directly to Recovery Wizard |
+| `W` | Jump directly to Workspace Diagnostics |
+| `T` | Jump directly to Storage.json Browser |
+| `?` | Toggle Help overlay |
+| `Q` / `Esc` | Quit |
+
+**Action Menu (current database):**
+
+| Option | Description |
+|--------|-------------|
+| Browse Conversations | Open the Conversation Browser for this database |
+| Run Full Recovery | Launch the 6-phase Recovery Wizard |
+| Create Backup | Create a timestamped backup copy |
+| Merge From Another DB | Launch the Merge Wizard |
+| Workspace Diagnostics | Inspect workspace URI bindings and filesystem health |
+| Manage Storage | Open the Storage.json Browser |
+| Create Empty Database | Reset the database (backup created first) |
+
+**Action Menu (backup database):**
+
+| Option | Description |
+|--------|-------------|
+| Browse Conversations | Inspect conversations in this backup |
+| Restore This Backup | Replace current database with this backup |
+| Compare with Current | Open Merge Wizard pre-loaded with this backup as source |
+| Delete This Backup | Remove this backup file |
+
+#### 2. Conversation Browser
+
+Browse, search, rename, and delete individual conversations. Split pane shows the conversation list on the left and details (UUID, workspace, timestamps, sync status) on the right.
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Navigate between conversations |
+| `Enter` | Open the context menu (Inspect / Rename / Delete) |
+| `/` | Activate search/filter mode — type to filter by title |
+| `N` | Rename the selected conversation |
+| `D` | Delete the selected conversation (with confirmation) |
+| `Esc` | Return to previous screen |
+
+#### 3. Raw Payload Inspector
+
+View the raw JSON payload of a specific conversation, scrollable with line counts.
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Scroll through the payload |
+| `Esc` | Return to Conversation Browser |
+
+#### 4. Recovery Wizard
+
+Visual, guided execution of the 6-phase recovery pipeline with a real-time progress indicator:
+
+| Phase | Description |
+|-------|-------------|
+| **Backup** | Creates a safety backup of the current database |
+| **Discovery** | Scans `~/.gemini/antigravity/conversations/` for `.pb` files |
+| **Titles** | Extracts titles from brain artifacts (`task.md`, `implementation_plan.md`, etc.) |
+| **Injection** | Synthesizes Protobuf entries and injects into `state.vscdb` |
+| **JSON** | Synchronizes the JSON `ChatSessionStore.index` |
+| **Done** | Displays summary statistics |
+
+Press `Enter` to begin. After completion, a full results summary is displayed.
+
+#### 5. Merge Wizard
+
+Merge conversations from a source database (backup or external) into the current database with cherry-pick support:
+
+1. **Source Selection** — Type or paste the path to the source `.vscdb` file
+2. **Diff Preview** — See which conversations are new, shared, or target-only
+3. **Cherry-Pick** — Use `Space` to toggle individual conversations, `A` to select all, `N` to select none
+4. **Strategy Selection** — Choose `Additive` (safe, only add missing) or `Overwrite` (replace shared entries)
+5. **Execution** — Merge runs with automatic backup
+
+#### 6. Workspace Browser
+
+Inspect all unique workspace URIs in the database with filesystem health checks:
+
+| Column | Description |
+|--------|-------------|
+| **✓** | Workspace exists and is accessible |
+| **⚠** | Workspace exists but has permission issues |
+| **✗** | Workspace path does not exist on disk |
+| **Convs** | Number of conversations bound to this workspace |
+
+#### 7. Storage.json Browser
+
+Browse, edit, and manage the IDE's `storage.json` configuration file:
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Navigate between keys |
+| `E` | Edit the value of the selected key |
+| `D` | Delete the selected key (with confirmation) |
+| `Esc` | Return to Home |
+
+#### 8. Help Overlay
+
+Press `?` from any screen to view a complete keyboard shortcut reference.
+
+---
+
+### Headless Interactive Mode
+
+For environments without TUI support (SSH, minimal terminals, screen readers):
+
+```bash
+python antigravity_database_manager.py --headless
+```
+
+Presents a numbered menu with all 10 operations:
+
+```
+  AGMERCIUM DB MANAGER — Main Menu
+  ═══════════════════════════════════
+  [1]  Scan & Compare Databases
+  [2]  Restore a Backup
+  [3]  Run Full Recovery Pipeline
+  [4]  Merge Two Databases
+  [5]  Create Empty Database
+  [6]  Create Manual Backup
+  [7]  Browse Conversations
+  [8]  Health Check
+  [9]  Workspace Diagnostics
+  [10] Manage Storage.json
+  [Q]  Quit
+```
+
+Each menu provides guided, step-by-step interactive prompts with confirmation dialogs.
+
+---
+
+### CLI Subcommands (Non-Interactive)
+
+For scripting, automation, and CI/CD. All subcommands auto-detect the database path and exit with standard codes (`0` = success, `1` = error).
+
+#### `scan` — Database Overview
+
+```bash
+python antigravity_database_manager.py scan           # Human-readable table
+python antigravity_database_manager.py scan --json     # JSON output
+```
+
+#### `recover` — Full 6-Phase Recovery Pipeline
+
+```bash
+python antigravity_database_manager.py recover
+```
+
+Runs backup → discovery → title extraction → Protobuf injection → JSON sync → summary. Outputs progress messages to stdout.
+
+#### `health` — Database Health Check
+
+```bash
+python antigravity_database_manager.py health          # Human-readable report
+python antigravity_database_manager.py health --json   # JSON output
+```
+
+Reports: size, conversation/titled counts, workspace count, sync status, orphan detection.
+
+#### `diagnose` — Corruption Diagnostic Engine
+
+```bash
+python antigravity_database_manager.py diagnose                      # Scan current DB
+python antigravity_database_manager.py diagnose --target path.vscdb   # Scan external DB
+python antigravity_database_manager.py diagnose --json               # JSON output
+```
+
+Byte-level Protobuf scanner detects: ghost bytes (U+FFFD), double-wrapping, UUID mismatches, invalid wire types, field ordering violations.
+
+#### `repair` — Autonomous Repair Engine
+
+```bash
+python antigravity_database_manager.py repair                      # Repair current DB
+python antigravity_database_manager.py repair --target path.vscdb   # Repair external DB
+```
+
+Auto-fixes all corruptions found by `diagnose`. Creates a backup first. Reports: entries scanned, repaired, preserved, ghost bytes stripped, double wraps fixed, UUID mismatches fixed.
+
+#### `merge` — Database Merge
+
+```bash
+# Additive merge (safe — only add missing conversations)
+python antigravity_database_manager.py merge --source backup.vscdb
+
+# Overwrite merge (replace shared entries with source versions)
+python antigravity_database_manager.py merge --source backup.vscdb --strategy overwrite
+
+# Cherry-pick specific conversations by UUID
+python antigravity_database_manager.py merge --source backup.vscdb --cherry-pick "uuid1,uuid2,uuid3"
+```
+
+#### `backup` — Backup Management
+
+```bash
+python antigravity_database_manager.py backup list        # List all backups (same as scan)
+python antigravity_database_manager.py backup create      # Create a new backup
+python antigravity_database_manager.py backup restore 1   # Restore backup #1 (from scan output)
+```
+
+#### `create` — Create Empty Database
+
+```bash
+python antigravity_database_manager.py create --output /path/to/new.vscdb
+```
+
+#### `conversations` — Conversation Management
+
+```bash
+python antigravity_database_manager.py conversations list                      # List all conversations
+python antigravity_database_manager.py conversations list --json               # JSON output
+python antigravity_database_manager.py conversations show <uuid>               # Show raw JSON payload
+python antigravity_database_manager.py conversations delete <uuid>             # Delete a conversation
+python antigravity_database_manager.py conversations rename <uuid> "New Title" # Rename a conversation
+```
+
+#### `workspace` — Workspace Diagnostics & Migration
+
+```bash
+python antigravity_database_manager.py workspace list                  # List all workspaces
+python antigravity_database_manager.py workspace list --json           # JSON output
+python antigravity_database_manager.py workspace check                 # Filesystem health check
+python antigravity_database_manager.py workspace migrate /new/path     # Rebind all conversations to new path
+```
+
+The `migrate` command is critical for Bug #3 (workspace rebinding) and Bug #7 (Windows path casing).
+
+#### `storage` — Storage.json Management
+
+```bash
+python antigravity_database_manager.py storage inspect                    # List all keys
+python antigravity_database_manager.py storage inspect --json             # JSON output
+python antigravity_database_manager.py storage backup                     # Create a backup
+python antigravity_database_manager.py storage patch "key.path" "value"   # Set a value
+python antigravity_database_manager.py storage delete "key.path"          # Delete a key
+```
+
+---
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--headless` | Force headless interactive mode (no TUI) |
+| `--json` | Output results as JSON (available for `scan`, `health`, `diagnose`, `conversations list`, `workspace list`, `storage inspect`) |
+| `--version` / `-v` | Display version number |
+| `--help` / `-h` | Display help documentation |
 
 ### Building the Zipapp
 
