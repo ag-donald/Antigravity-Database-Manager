@@ -74,7 +74,7 @@ class HomeView:
             items = (
                 ["Browse Conversations", "Run Full Recovery", "Create Backup",
                  "Merge From Another DB", "Workspace Diagnostics",
-                 "Manage Storage", "Create Empty Database"]
+                 "Manage Storage", "Reset Database (Empty)"]
                 if is_current else
                 ["Browse Conversations", "Restore This Backup",
                  "Compare with Current", "Delete This Backup"]
@@ -103,11 +103,8 @@ class HomeView:
                     return f"push:workspaces:{cur_snap.path}"
                 elif choice == "Manage Storage":
                     return "push:storage"
-                elif choice == "Create Empty Database":
-                    ops.create_backup(cur_snap.path, reason="before_empty")
-                    ops.create_empty_db(cur_snap.path)
-                    self.set_status("✓ Emptied database safely")
-                    self._refresh()
+                elif choice == "Reset Database (Empty)":
+                    self.m.overlay = "confirm_reset"
                 elif choice == "Restore This Backup":
                     self.m.overlay = "confirm_restore"
                 elif choice == "Compare with Current":
@@ -139,18 +136,35 @@ class HomeView:
                 self.m.overlay = "none"
             return None
 
+        elif self.m.overlay == "confirm_reset" and cur_snap:
+            if key.char.lower() == "y":
+                ops.create_backup(cur_snap.path, reason="before_empty")
+                ops.create_empty_db(cur_snap.path)
+                self.set_status("✓ Database reset safely")
+                self.m.overlay = "none"
+                self._refresh()
+            elif key.char.lower() == "n" or key.key == Key.ESCAPE:
+                self.m.overlay = "none"
+            return None
+
         # Base navigation
-        old_sel = self.m.selected
         if key.key == Key.UP:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
             self.m.selected = min(len(self.m.snapshots) - 1, self.m.selected + 1)
-        
-        if self.m.selected != old_sel and self.m.snapshots:
+        elif key.key == Key.PAGE_UP:
+            self.m.selected = max(0, self.m.selected - 10)
+        elif key.key == Key.PAGE_DOWN:
+            self.m.selected = min(len(self.m.snapshots) - 1, self.m.selected + 10)
+
+        # Lazy-load health reports for newly selected snapshots
+        if self.m.snapshots:
             snap = self.m.snapshots[self.m.selected]
             if snap.path not in self.m.reports:
                 self.m.reports[snap.path] = health_check(snap)
-        elif key.char.lower() == "s":
+
+        # Shortcut keys (independent of selection change)
+        if key.char.lower() == "s":
             self._refresh()
             self.set_status("✓ Refreshed")
         elif key.char.lower() == "b" and cur_snap:
@@ -199,7 +213,7 @@ class HomeView:
                 it = (
                     ["Browse Conversations", "Run Full Recovery", "Create Backup",
                      "Merge From Another DB", "Workspace Diagnostics",
-                     "Manage Storage", "Create Empty Database"]
+                     "Manage Storage", "Reset Database (Empty)"]
                     if cur_snap.is_current else
                     ["Browse Conversations", "Restore This Backup",
                      "Compare with Current", "Delete This Backup"]
@@ -209,6 +223,8 @@ class HomeView:
                 _overlay(lines, W.render_confirm_modal("Restore Backup", [f"Restore {cur_snap.label}?", "A safety backup will be created."], cols, rows))
             elif self.m.overlay == "confirm_delete":
                 _overlay(lines, W.render_confirm_modal("Delete Backup", [f"Delete {cur_snap.label}?"], cols, rows))
+            elif self.m.overlay == "confirm_reset":
+                _overlay(lines, W.render_confirm_modal("Reset Database", [f"⚠ This will ERASE all data in {cur_snap.label}.", "A backup will be created first.", "Are you sure? (Y/N)"], cols, rows))
                 
         lines.extend(W.render_footer(cols, ["↑↓ Nav", "Enter Act", "W Workspaces", "T Storage", "? Help", "Q Quit"], self.m.status_msg))
         return lines
@@ -313,6 +329,10 @@ class ConversationBrowserView:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
             self.m.selected = min(len(self.m.filtered) - 1, self.m.selected + 1)
+        elif key.key == Key.PAGE_UP:
+            self.m.selected = max(0, self.m.selected - 10)
+        elif key.key == Key.PAGE_DOWN:
+            self.m.selected = min(len(self.m.filtered) - 1, self.m.selected + 10)
         elif key.char == "/":
             self.m.is_searching = True
         elif key.char.lower() == "d" and cur_conv:
@@ -325,6 +345,14 @@ class ConversationBrowserView:
             self.m.menu_selected = 0
         elif key.key == Key.ESCAPE:
             return "back"
+
+        # Keep scroll in sync with selection
+        visible_h = max(1, 20)  # approximate visible rows for conversation table
+        if self.m.selected < self.m.scroll:
+            self.m.scroll = self.m.selected
+        elif self.m.selected >= self.m.scroll + visible_h:
+            self.m.scroll = self.m.selected - visible_h + 1
+
         return None
 
     def view(self, cols: int, rows: int) -> list[str]:
@@ -378,6 +406,10 @@ class ConversationDataView:
             self.m.scroll = max(0, self.m.scroll - 1)
         elif key.key == Key.DOWN:
             self.m.scroll = min(len(self.m.payload_lines) - 1, self.m.scroll + 1)
+        elif key.key == Key.PAGE_UP:
+            self.m.scroll = max(0, self.m.scroll - 20)
+        elif key.key == Key.PAGE_DOWN:
+            self.m.scroll = min(len(self.m.payload_lines) - 1, self.m.scroll + 20)
         elif key.key == Key.ESCAPE:
             return "back"
         return None
@@ -419,21 +451,29 @@ class RecoveryWizardView:
         if idx < len(self.m.phase_statuses):
             self.m.phase_statuses[idx] = msg
 
+    def _needs_paint(self) -> bool:
+        """Signal that paint() should be called before the next blocking op."""
+        return self.m.phase == "running"
+
     def update(self, key: KeyEvent) -> Optional[str]:
         if self.m.phase == "ready":
             if key.key == Key.ENTER:
+                # Set phase to "running" — the view() will render "Working…"
+                # and the App loop will call paint() before the next update().
                 self.m.phase = "running"
                 self.m.phase_idx = 0
-                res = ops.run_recovery_pipeline(
-                    self.db_path,
-                    os.path.join(EnvironmentResolver.get_gemini_base_path(), "conversations"),
-                    os.path.join(EnvironmentResolver.get_gemini_base_path(), "brain"),
-                    on_progress=self._on_progress,
-                )
-                self.m.res = res
-                self.m.phase = "done" if res.success else "error"
             elif key.key == Key.ESCAPE:
                 return "back"
+        elif self.m.phase == "running":
+            # Execute the pipeline on the NEXT update cycle (after paint)
+            res = ops.run_recovery_pipeline(
+                self.db_path,
+                os.path.join(EnvironmentResolver.get_gemini_base_path(), "conversations"),
+                os.path.join(EnvironmentResolver.get_gemini_base_path(), "brain"),
+                on_progress=self._on_progress,
+            )
+            self.m.res = res
+            self.m.phase = "done" if res.success else "error"
         elif self.m.phase in ("done", "error"):
             if key.key in (Key.ENTER, Key.ESCAPE):
                 return "back"
@@ -742,6 +782,10 @@ class StorageBrowserView:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
             self.m.selected = min(len(self.m.entries) - 1, self.m.selected + 1)
+        elif key.key == Key.PAGE_UP:
+            self.m.selected = max(0, self.m.selected - 10)
+        elif key.key == Key.PAGE_DOWN:
+            self.m.selected = min(len(self.m.entries) - 1, self.m.selected + 10)
         elif key.char.lower() == "e" and self.m.entries:
             entry = self.m.entries[self.m.selected]
             self.m.overlay = "edit_value"
@@ -750,6 +794,14 @@ class StorageBrowserView:
             self.m.overlay = "confirm_delete"
         elif key.key == Key.ESCAPE:
             return "back"
+
+        # Keep scroll in sync with selection
+        visible_h = max(1, 20)
+        if self.m.selected < self.m.scroll:
+            self.m.scroll = self.m.selected
+        elif self.m.selected >= self.m.scroll + visible_h:
+            self.m.scroll = self.m.selected - visible_h + 1
+
         return None
 
     def view(self, cols: int, rows: int) -> list[str]:

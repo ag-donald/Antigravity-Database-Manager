@@ -41,8 +41,18 @@ def _pad(s: str, w: int) -> str:
     return s + " " * max(0, w - _vis_len(s))
 
 def _trunc(s: str, w: int) -> str:
-    if len(s) > w:
-        return s[:w-1] + "…"
+    if _vis_len(s) > w:
+        # Walk character-by-character, skipping ANSI sequences
+        visible = 0
+        i = 0
+        while i < len(s) and visible < w - 1:
+            m = _ANSI_RE.match(s, i)
+            if m:
+                i = m.end()
+                continue
+            visible += 1
+            i += 1
+        return s[:i] + "…"
     return s
 
 # ==============================================================================
