@@ -143,7 +143,7 @@ message TrajectoryPayload {
 
 We have developed and released an open-source recovery tool that rebuilds both indices from the intact `.pb` files:
 
-**Repository:** [github.com/agmercium/antigravity-recovery](https://github.com/agmercium/antigravity-recovery)
+**Repository:** [github.com/ag-donald/Antigravity-Database-Manager](https://github.com/ag-donald/Antigravity-Database-Manager)
 
 ### How It Works
 
@@ -180,7 +180,7 @@ python antigravity_database_manager.py
 
 ## Attachments
 
-- **Recovery Tool Source:** [github.com/agmercium/antigravity-recovery](https://github.com/agmercium/antigravity-recovery)
+- **Recovery Tool Source:** [github.com/ag-donald/Antigravity-Database-Manager](https://github.com/ag-donald/Antigravity-Database-Manager)
 - **Reverse-Engineered Protobuf Schema:** `docs/schema.proto` in the repository
 - **Changelog:** `CHANGELOG.md` in the repository
 

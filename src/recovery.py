@@ -126,8 +126,8 @@ def main() -> None:
   Environment Variables:
     AGMERCIUM_DEBUG=1    Enable verbose debug logging
 
-  GitHub:  https://github.com/agmercium/antigravity-recovery
-  Issues:  https://github.com/agmercium/antigravity-recovery/issues
+  GitHub:  https://github.com/ag-donald/Antigravity-Database-Manager
+  Issues:  https://github.com/ag-donald/Antigravity-Database-Manager/issues
 ================================================================================
 """)
         sys.exit(0)

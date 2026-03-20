@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This project exists to help the com
 
 ### Reporting Bugs
 
-1. Check the [existing issues](https://github.com/agmercium/antigravity-recovery/issues) to see if your bug has already been reported.
+1. Check the [existing issues](https://github.com/ag-donald/Antigravity-Database-Manager/issues) to see if your bug has already been reported.
 2. If not, open a new issue with:
    - Your operating system and Python version
    - Antigravity IDE version
