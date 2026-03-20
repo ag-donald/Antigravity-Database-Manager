@@ -32,12 +32,26 @@ def build_zipapp(dist_dir: str) -> str:
     # Create a staging directory
     staging = os.path.join(dist_dir, "_staging")
     if os.path.exists(staging):
-        shutil.rmtree(staging)
+        shutil.rmtree(staging, ignore_errors=True)
+        if os.path.exists(staging):
+            # Force-remove read-only files (Windows __pycache__)
+            for root, dirs, files in os.walk(staging, topdown=False):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    os.chmod(fp, 0o777)
+                    os.remove(fp)
+                for d in dirs:
+                    os.rmdir(os.path.join(root, d))
+            os.rmdir(staging)
     os.makedirs(staging)
 
-    # Copy source files
+    # Copy source files (exclude __pycache__ and .pyc files)
     project_root = os.path.dirname(os.path.abspath(__file__))
-    shutil.copytree(os.path.join(project_root, "src"), os.path.join(staging, "src"))
+    shutil.copytree(
+        os.path.join(project_root, "src"),
+        os.path.join(staging, "src"),
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
     shutil.copy2(os.path.join(project_root, "antigravity_recover.py"), staging)
 
     # Create __main__.py for the archive
@@ -55,7 +69,7 @@ def build_zipapp(dist_dir: str) -> str:
     )
 
     # Clean up staging
-    shutil.rmtree(staging)
+    shutil.rmtree(staging, ignore_errors=True)
 
     print(f"[ OK ] {output_path}")
     return output_path
