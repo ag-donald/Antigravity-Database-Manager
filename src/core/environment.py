@@ -28,7 +28,7 @@ class EnvironmentResolver:
                 "User", "globalStorage", "state.vscdb",
             )
         else:  # Linux / BSD / WSL
-            return os.path.join(home, ".config", "antigravity", "User", "globalStorage", "state.vscdb")
+            return os.path.join(home, ".config", "Antigravity", "User", "globalStorage", "state.vscdb")
 
     @staticmethod
     def get_storage_json_path() -> str:

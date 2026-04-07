@@ -190,7 +190,7 @@ build_release.py              ← Builds the cross-platform .pyz zipapp
 |----------|---------------|--------|
 | **Windows** | `%APPDATA%\antigravity\User\globalStorage\state.vscdb` | ✅ Tested |
 | **macOS** | `~/Library/Application Support/antigravity/User/globalStorage/state.vscdb` | ✅ Supported |
-| **Linux** | `~/.config/antigravity/User/globalStorage/state.vscdb` | ✅ Supported |
+| **Linux** | `~/.config/Antigravity/User/globalStorage/state.vscdb` | ✅ Supported |
 
 - **Python**: 3.10+
 - **Dependencies**: None (uses only Python standard library)
