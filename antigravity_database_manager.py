@@ -53,6 +53,9 @@ def main() -> None:
     with ApplicationContext() as ctx:
         args = cli_parser.parse_args()
 
+        if getattr(args, "db_path", None):
+            ctx.db_path = getattr(args, "db_path")
+
         if cli_parser.has_subcommand(args):
             # Direct headless command (e.g., `antigravity_database_manager.py scan`)
             ctx.perform_preflight_checks()

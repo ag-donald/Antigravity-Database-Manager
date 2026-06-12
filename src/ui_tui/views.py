@@ -39,6 +39,7 @@ from ..core import db_operations as ops
 from ..core.db_scanner import scan_all, list_conversations, health_check, analyze_workspaces
 from ..core.environment import EnvironmentResolver
 from ..core import storage_manager as sm
+from ..core.lifecycle import ApplicationContext
 
 
 # ==============================================================================
@@ -114,8 +115,9 @@ class HomeView:
       - Empty state handling with clear guidance
     """
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, ctx: ApplicationContext):
+        self.ctx = ctx
+        self.db_path = ctx.db_path
         self.m = HomeModel()
 
     def on_enter(self) -> None:
@@ -125,6 +127,24 @@ class HomeView:
         self.m.snapshots = scan_all(self.db_path)
         if self.m.snapshots:
             self.m.reports[self.m.snapshots[0].path] = health_check(self.m.snapshots[0])
+
+    def _get_action_menu_items(self, snap: DatabaseSnapshot) -> list[str]:
+        if snap.is_current:
+            return [
+                "Browse Conversations", "Run Full Recovery", "Create Backup",
+                "Merge From Another DB", "Workspace Diagnostics",
+                "Manage Storage", "Reset Database (Empty)"
+            ]
+        elif os.path.basename(snap.path) == "state.vscdb":
+            return [
+                "Set as Active Database", "Browse Conversations",
+                "Compare with Active", "Create Backup"
+            ]
+        else:
+            return [
+                "Browse Conversations", "Restore This Backup",
+                "Compare with Active", "Delete This Backup"
+            ]
 
     def set_status(self, msg: str, severity: str = "success") -> None:
         self.m.status_msg = msg
@@ -140,15 +160,7 @@ class HomeView:
 
         # --- Overlay handlers ---
         if self.m.overlay == "action_menu" and cur_snap:
-            is_current = cur_snap.is_current
-            items = (
-                ["Browse Conversations", "Run Full Recovery", "Create Backup",
-                 "Merge From Another DB", "Workspace Diagnostics",
-                 "Manage Storage", "Reset Database (Empty)"]
-                if is_current else
-                ["Browse Conversations", "Restore This Backup",
-                 "Compare with Current", "Delete This Backup"]
-            )
+            items = self._get_action_menu_items(cur_snap)
 
             if key.key == Key.UP:
                 self.m.menu_selected = max(0, self.m.menu_selected - 1)
@@ -177,10 +189,16 @@ class HomeView:
                     self.m.overlay = "confirm_reset"
                 elif choice == "Restore This Backup":
                     self.m.overlay = "confirm_restore"
-                elif choice == "Compare with Current":
+                elif choice == "Compare with Active":
                     return f"push:merge:{cur_snap.path}"
                 elif choice == "Delete This Backup":
                     self.m.overlay = "confirm_delete"
+                elif choice == "Set as Active Database":
+                    self.db_path = cur_snap.path
+                    self.ctx.db_path = cur_snap.path
+                    self.ctx.perform_preflight_checks() # update lock status, etc.
+                    self.set_status(f"{Icons.CHECK} Active database set", "success")
+                    self._refresh()
             return None
 
         elif self.m.overlay == "confirm_restore" and cur_snap:
@@ -294,14 +312,7 @@ class HomeView:
         cur_snap = self.m.snapshots[self.m.selected] if self.m.snapshots else None
         if cur_snap:
             if self.m.overlay == "action_menu":
-                it = (
-                    ["Browse Conversations", "Run Full Recovery", "Create Backup",
-                     "Merge From Another DB", "Workspace Diagnostics",
-                     "Manage Storage", "Reset Database (Empty)"]
-                    if cur_snap.is_current else
-                    ["Browse Conversations", "Restore This Backup",
-                     "Compare with Current", "Delete This Backup"]
-                )
+                it = self._get_action_menu_items(cur_snap)
                 menu = ActionMenu(title=cur_snap.label, items=it, selected=self.m.menu_selected)
                 lines = overlay_on(lines, menu.render(cols, rows))
             elif self.m.overlay == "confirm_restore":

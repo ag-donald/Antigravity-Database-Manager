@@ -16,19 +16,36 @@ class EnvironmentResolver:
     """Cross-platform path resolution for all Antigravity IDE data stores."""
 
     @staticmethod
-    def get_antigravity_db_path() -> str:
-        """Returns the OS-specific absolute path to the IDE's state.vscdb."""
+    def get_antigravity_db_paths() -> list[str]:
+        """Returns the list of OS-specific candidate paths to the IDE's state.vscdb."""
         home = os.path.expanduser("~")
+        candidates = []
         if sys.platform.startswith("win"):
             appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
-            return os.path.join(appdata, "antigravity", "User", "globalStorage", "state.vscdb")
+            candidates.append(os.path.join(appdata, "Antigravity IDE", "User", "globalStorage", "state.vscdb"))
+            candidates.append(os.path.join(appdata, "antigravity", "User", "globalStorage", "state.vscdb"))
         elif sys.platform.startswith("darwin"):
-            return os.path.join(
+            candidates.append(os.path.join(
+                home, "Library", "Application Support", "Antigravity IDE",
+                "User", "globalStorage", "state.vscdb",
+            ))
+            candidates.append(os.path.join(
                 home, "Library", "Application Support", "antigravity",
                 "User", "globalStorage", "state.vscdb",
-            )
+            ))
         else:  # Linux / BSD / WSL
-            return os.path.join(home, ".config", "Antigravity", "User", "globalStorage", "state.vscdb")
+            candidates.append(os.path.join(home, ".config", "Antigravity IDE", "User", "globalStorage", "state.vscdb"))
+            candidates.append(os.path.join(home, ".config", "Antigravity", "User", "globalStorage", "state.vscdb"))
+        return candidates
+
+    @staticmethod
+    def get_antigravity_db_path() -> str:
+        """Returns the OS-specific absolute path to the IDE's state.vscdb, preferring existing files."""
+        paths = EnvironmentResolver.get_antigravity_db_paths()
+        for p in paths:
+            if os.path.isfile(p):
+                return p
+        return paths[0]
 
     @staticmethod
     def get_storage_json_path() -> str:

@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Force headless interactive mode (no TUI)")
     parser.add_argument("--json", action="store_true",
                         help="Output results as JSON (where applicable)")
+    parser.add_argument("--db-path", help="Override the default database path")
 
     subparsers = parser.add_subparsers(dest="command")
 
