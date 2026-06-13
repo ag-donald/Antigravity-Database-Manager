@@ -714,6 +714,8 @@ class TestMultipleDatabaseResolution(unittest.TestCase):
             current_snapshots = [s for s in snapshots if s.is_current]
             self.assertEqual(len(current_snapshots), 1)
             self.assertEqual(current_snapshots[0].path, db_new)
+            self.assertTrue(snapshots[0].is_current)
+            self.assertEqual(snapshots[0].path, db_new)
         finally:
             # Restore original method
             EnvironmentResolver.get_antigravity_db_paths = original_paths_fn

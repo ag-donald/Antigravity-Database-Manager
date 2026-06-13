@@ -502,9 +502,13 @@ def _menu_switch_db(ctx: ApplicationContext) -> None:
     from ..core.environment import EnvironmentResolver
     db_paths = [p for p in EnvironmentResolver.get_antigravity_db_paths() if os.path.isfile(p)]
 
+    def norm(p: str) -> str:
+        return os.path.abspath(os.path.realpath(os.path.expanduser(p))) if p else ""
+
+    norm_active = norm(ctx.db_path)
     print("  Detected Databases:")
     for idx, path in enumerate(db_paths):
-        active_str = " (ACTIVE)" if path == ctx.db_path else ""
+        active_str = " (ACTIVE)" if norm(path) == norm_active else ""
         label = "Antigravity IDE" if "Antigravity IDE" in path else "Antigravity (deprecated)"
         print(f"    [{idx+1}] {label} at {path}{active_str}")
 
@@ -518,16 +522,20 @@ def _menu_switch_db(ctx: ApplicationContext) -> None:
             idx = int(ans) - 1
             if 0 <= idx < len(db_paths):
                 ctx.db_path = db_paths[idx]
-                ctx.perform_preflight_checks() # recheck warn/lock/etc.
+                warnings = ctx.perform_preflight_checks()
+                for w in warnings:
+                    Logger.warn(w)
                 Logger.success(f"Switched to: {ctx.db_path}")
                 return
         except ValueError:
             pass
 
-        custom_path = os.path.abspath(os.path.realpath(os.path.expanduser(ans)))
+        custom_path = norm(ans)
         if os.path.isfile(custom_path):
             ctx.db_path = custom_path
-            ctx.perform_preflight_checks()
+            warnings = ctx.perform_preflight_checks()
+            for w in warnings:
+                Logger.warn(w)
             Logger.success(f"Switched to: {ctx.db_path}")
         else:
             Logger.error(f"File not found: {custom_path}")

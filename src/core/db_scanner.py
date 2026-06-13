@@ -426,27 +426,24 @@ def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
 
     norm_current = norm(current_db_path)
 
-    # 1. Get all candidate primary DB paths
-    candidates = EnvironmentResolver.get_antigravity_db_paths()
-    primary_paths = []
-    for c in candidates:
-        if os.path.isfile(c) or norm(c) == norm_current:
-            primary_paths.append(c)
+    # 1. Get all candidate primary DB paths, ensuring current_db_path is first and unique
+    primary_paths = [current_db_path]
+    seen_norms = {norm_current}
 
-    # Ensure current_db_path is in primary_paths
-    if current_db_path not in primary_paths:
-        primary_paths.append(current_db_path)
+    candidates = EnvironmentResolver.get_antigravity_db_paths()
+    for c in candidates:
+        if os.path.isfile(c):
+            norm_c = norm(c)
+            if norm_c not in seen_norms:
+                primary_paths.append(c)
+                seen_norms.add(norm_c)
 
     snapshots: list[DatabaseSnapshot] = []
-    scanned_paths = set()
+    scanned_paths = set(seen_norms)
 
     # 2. Scan primary DBs
     for p in primary_paths:
         norm_p = norm(p)
-        if norm_p in scanned_paths:
-            continue
-        scanned_paths.add(norm_p)
-
         is_current = (norm_p == norm_current)
 
         # Label the primary DBs
