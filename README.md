@@ -173,7 +173,7 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (61 tests)
+├── test_core.py                  ← Core logic tests (63 tests)
 └── test_tui.py                   ← TUI framework tests (113 tests)
 ```
 
@@ -191,11 +191,15 @@ tests/
 
 ## Compatibility
 
-| Platform | Database Path | Status |
-|----------|---------------|--------|
-| **Windows** | `%APPDATA%\antigravity\User\globalStorage\state.vscdb` | Tested |
-| **macOS** | `~/Library/Application Support/antigravity/User/globalStorage/state.vscdb` | Supported |
-| **Linux** | `~/.config/Antigravity/User/globalStorage/state.vscdb` | Supported |
+The tool auto-detects both the **active** and **deprecated** Antigravity IDE database locations. When both exist, the TUI and headless menus let you choose or switch the active database.
+
+| Platform | Active path | Deprecated path |
+|----------|-------------|-----------------|
+| **Windows** | `%APPDATA%\Antigravity IDE\User\globalStorage\state.vscdb` | `%APPDATA%\antigravity\User\globalStorage\state.vscdb` |
+| **macOS** | `~/Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb` | `~/Library/Application Support/antigravity/User/globalStorage/state.vscdb` |
+| **Linux** | `~/.config/Antigravity IDE/User/globalStorage/state.vscdb` | `~/.config/Antigravity/User/globalStorage/state.vscdb` |
+
+The resolver prefers whichever path exists on disk, defaulting to the active `Antigravity IDE` folder.
 
 - **Python:** 3.10+
 - **Dependencies:** None (standard library only)
@@ -244,6 +248,8 @@ Split pane: databases (current and backups) on the left, health report on the ri
 | `Q` / `Esc` | Quit |
 
 **Action menu (current database):** Browse Conversations, Run Full Recovery, Create Backup, Merge From Another DB, Workspace Diagnostics, Manage Storage, Reset Database (Empty).
+
+**Action menu (other primary database):** Set as Active Database, Browse Conversations, Compare with Current.
 
 **Action menu (backup database):** Browse Conversations, Restore This Backup, Compare with Current, Delete This Backup.
 
@@ -337,6 +343,7 @@ Presents a numbered menu with ten operations:
   [8]  Health Check
   [9]  Workspace Diagnostics
   [10] Manage Storage.json
+  [11] Switch Active Database
   [Q]  Quit
 ```
 
@@ -455,6 +462,7 @@ python antigravity_database_manager.py storage delete "key.path"
 | Flag | Description |
 |------|-------------|
 | `--headless` | Force headless interactive mode (no TUI) |
+| `--db-path` | Override the default `state.vscdb` location |
 | `--json` | JSON output (supported on `scan`, `recover`, `health`, `diagnose`, `conversations list`, `workspace list`, `storage inspect`) |
 | `--version` / `-v` | Display version number |
 | `--help` / `-h` | Display help |

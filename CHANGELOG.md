@@ -11,11 +11,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 ## [Unreleased]
 
 ### Changed
-- **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (174 total). Removed inaccurate brain-artifact file references from user-facing docs.
+- **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (176 total). Removed inaccurate brain-artifact file references from user-facing docs.
 - **`src/core/artifacts.py`** — Removed hallucinated title-extraction paths (`task.md`, `implementation_plan.md`, `walkthrough.md`). Module now only infers workspace paths from local `file:///` URIs.
 - **`resolve_title`** — Titles resolve from preserved database metadata, then `.pb` timestamp fallbacks.
 - **Entry point / TUI** — Trimmed marketing language from module docstrings.
 - **Tests** — Added `TestResolveTitle`, `TestWorkspaceInference`, and `TestRecoveryPipelineTitles` (9 tests) covering title resolution, task.md regression guard, workspace inference, and recovery integration.
+- **Multi-database support** (PR #3) — `get_antigravity_db_paths()` discovers active `Antigravity IDE` and deprecated `Antigravity` folders; `scan_all()` consolidates both; `--db-path` CLI override; headless `[11] Switch Active Database`; TUI **Set as Active Database** action. Review feedback addressed: active DB always at `snapshots[0]`, normalized path deduplication, preflight warnings on switch.
 
 ## [8.6.1] - 2026-04-07
 
