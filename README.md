@@ -21,6 +21,7 @@
   <a href="#the-bug">The Bug</a> •
   <a href="#how-it-works">How It Works</a> •
   <a href="#compatibility">Compatibility</a> •
+  <a href="#usage">Usage</a> •
   <a href="#faq">FAQ</a> •
   <a href="#contributing">Contributing</a> •
   <a href="#license">License</a>
@@ -30,20 +31,20 @@
 
 ## The Bug
 
-Google Antigravity IDE (a heavily modified VS Code fork powering agent-first AI development) has a recurring bug where **all conversation history disappears** from the UI sidebar after:
+Google Antigravity IDE (a heavily modified VS Code fork for agent-first AI development) has a recurring bug where **conversation history disappears** from the UI sidebar after:
 
 - Updating the IDE to a new version
 - Restarting the application
 - Power outages or unclean shutdowns
-- Certain workspace/session transitions
+- Certain workspace or session transitions
 
-The underlying `.pb` conversation data files remain **fully intact** on disk at `~/.gemini/antigravity/conversations/`, but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically the `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — causing the sidebar to display zero history.
+The underlying `.pb` conversation data files remain **intact** on disk at `~/.gemini/antigravity/conversations/`, but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — so the sidebar shows zero history.
 
-**This tool rebuilds those internal indices from your intact `.pb` files, restoring your full conversation history.**
+**This tool rebuilds those internal indices from your intact `.pb` files, restoring conversation history in the IDE.**
 
 ### Community Bug Reports
 
-This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We have cataloged **11 distinct bug categories** with verified community reports, technical root cause analysis, and how this Database Manager solves each one:
+This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **11 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
 
 📋 **[Full Bug Catalog → BUGS_RESEARCH.md](BUGS_RESEARCH.md)**
 
@@ -58,18 +59,18 @@ This is a **widely reported issue** across the Google AI Developers Forum, Reddi
 | 7 | Windows Path Casing | Drive letter `H:` vs `h:` mismatch |
 | 8 | Long-Context Truncation | Large conversations exceed rendering limits |
 | 9 | Ghost Bytes / Double-Wrapping | Encoding corruption in Protobuf blob |
-| 10 | storage.json Desync | Three parallel data stores fall out of sync |
+| 10 | storage.json Desync | Parallel data stores fall out of sync |
 | 11 | Scratch Session Disabled | Workspace-less conversations hidden after upgrade |
 
 ### Root Cause
 
-All 11 bugs stem from the IDE's failure to atomically flush its internal indices during shutdown:
+These bugs stem from the IDE failing to atomically flush its internal indices during shutdown:
 
-1. **`chat.ChatSessionStore.index`** (JSON) — Gets reset to `{"version":1,"entries":{}}` 
-2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — Loses UUID-to-conversation mappings
-3. **`storage.json`** — Workspace binding metadata falls out of sync
+1. **`chat.ChatSessionStore.index`** (JSON) — reset to `{"version":1,"entries":{}}`
+2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — loses UUID-to-conversation mappings
+3. **`storage.json`** — workspace binding metadata falls out of sync
 
-The raw `.pb` data files at `~/.gemini/antigravity/conversations/` and brain artifacts at `~/.gemini/antigravity/brain/` are **never affected**. This means the data is fully recoverable — which is exactly what this tool does.
+The raw `.pb` files under `~/.gemini/antigravity/conversations/` are **never modified** by this tool. Recovery is possible because the conversation payloads survive on disk.
 
 ---
 
@@ -77,7 +78,7 @@ The raw `.pb` data files at `~/.gemini/antigravity/conversations/` and brain art
 
 ### Prerequisites
 
-- **Python 3.10+** (ships with most operating systems)
+- **Python 3.10+**
 - **No external dependencies** — standard library only
 
 ### Steps
@@ -85,32 +86,34 @@ The raw `.pb` data files at `~/.gemini/antigravity/conversations/` and brain art
 **Option A — Run from source:**
 
 ```bash
-# 1. Close Antigravity IDE completely (mandatory!)
+# 1. Close Antigravity IDE completely (mandatory)
 
 # 2. Run the recovery script
-python antigravity_database_manager.py
+python antigravity_database_manager.py recover
 
-# 3. Follow the interactive prompts
-
-# 4. Reopen Antigravity IDE — your history is back!
+# 3. Reopen Antigravity IDE — your history should be restored
 ```
 
-**Option B — Portable binary (no install needed):**
-
-Download `AgmerciumRecovery.pyz` from the [latest release](https://github.com/ag-donald/Antigravity-Database-Manager/releases) and run it directly:
+For the full interactive experience (database browser, merge wizard, diagnostics), run without a subcommand:
 
 ```bash
-# 1. Close Antigravity IDE completely (mandatory!)
-
-# 2. Run the portable binary
-python AgmerciumRecovery.pyz
-
-# 3. Follow the interactive prompts
-
-# 4. Reopen Antigravity IDE — your history is back!
+python antigravity_database_manager.py
 ```
 
-> **⚠️ Important:** The IDE **must** be fully closed before running this tool. If the IDE is running, it will overwrite the patched database when it shuts down.
+**Option B — Portable zipapp (no install needed):**
+
+Download `AgmerciumRecovery.pyz` from the [latest release](https://github.com/ag-donald/Antigravity-Database-Manager/releases) and run:
+
+```bash
+# 1. Close Antigravity IDE completely (mandatory)
+
+# 2. Run the portable binary
+python AgmerciumRecovery.pyz recover
+
+# 3. Reopen Antigravity IDE
+```
+
+> **Important:** The IDE **must** be fully closed before running this tool. If the IDE is running, it may overwrite the patched database when it shuts down.
 
 ---
 
@@ -118,69 +121,71 @@ python AgmerciumRecovery.pyz
 
 The Antigravity IDE stores conversation history in two parallel indices inside its SQLite database (`state.vscdb`):
 
-| Index | Format | Key |
-|-------|--------|-----|
+| Index | Format | SQLite Key |
+|-------|--------|------------|
 | **Trajectory Summaries** | Base64-encoded Protobuf | `antigravityUnifiedStateSync.trajectorySummaries` |
 | **Session Store** | JSON | `chat.ChatSessionStore.index` |
 
-When the bug occurs, one or both of these indices lose their entries, even though the raw `.pb` conversation files remain on disk.
+When the bug occurs, one or both indices lose their entries while the raw `.pb` conversation files remain on disk.
 
-This tool:
+The recovery pipeline:
 
-1. **Discovers** all local `.pb` conversation files in `~/.gemini/antigravity/conversations/`
-2. **Extracts titles** from brain artifacts (`task.md`, `implementation_plan.md`, `walkthrough.md`)
-3. **Synthesizes** Protobuf entries with byte-accurate Wire Type 2 nested schemas (Fields 9 and 17)
-4. **Merges** new entries into the existing indices without destroying cloud-only conversations
-5. **Backs up** the database before any modifications (automatic, timestamped backup)
-6. **Rolls back** automatically if any error occurs during the injection process
+1. **Discovers** all local `.pb` files in `~/.gemini/antigravity/conversations/`
+2. **Reads** any surviving title and workspace metadata still present in the database
+3. **Resolves titles** from preserved database metadata when available; otherwise generates timestamp-based titles from `.pb` file times (for example, `Conversation (Mar 19) a1b2c3d4`)
+4. **Assigns workspaces** from existing Protobuf hints, with a dominant-workspace fallback for unmapped conversations
+5. **Synthesizes** Protobuf entries with byte-accurate Wire Type 2 nested schemas (Fields 9 and 17)
+6. **Backs up** the database before any writes (automatic, timestamped copy)
+7. **Merges** new entries into both indices without destroying cloud-only conversations
+8. **Rolls back** automatically from the backup if any error occurs during injection
 
-### Architecture
+Protobuf field layout is documented in [docs/schema.proto](docs/schema.proto).
+
+### Project Structure
 
 ```
-antigravity_database_manager.py        ← Thin entry point
-build_release.py              ← Builds the cross-platform .pyz zipapp
-├── src/
-│   ├── core/                 ← Domain logic, models, and robust database operations
-│   │   ├── constants.py
-│   │   ├── models.py
-│   │   ├── protobuf.py
-│   │   ├── environment.py
-│   │   ├── artifacts.py
-│   │   ├── db_scanner.py
-│   │   ├── db_operations.py
-│   │   ├── diagnostic.py
-│   │   ├── storage_manager.py
-│   │   └── lifecycle.py
-│   ├── ui_tui/               ← Enterprise-grade Component-based TUI Framework
-│   │   ├── theme.py          ← Semantic colors, styles, gradients, icons, WCAG contrast
-│   │   ├── events.py         ← EventBus, KeyBindingManager, FocusManager
-│   │   ├── core.py           ← Component base, constraint sizing, Row/Column/Box layout
-│   │   ├── components.py     ← 20+ production UI components
-│   │   ├── animation.py      ← 26 easing functions, AnimatedValue, AnimationManager
-│   │   ├── engine.py         ← Double-buffered terminal I/O with non-blocking input
-│   │   ├── app.py            ← Animation-aware MVU event loop
-│   │   └── views.py          ← 8 MVU screens built with component system
-│   └── ui_headless/          ← Command-line Interface and Interactive Prompts
-│       ├── cli_parser.py
-│       ├── controller.py
-│       └── logger.py
-├── tests/
-│   ├── test_core.py          ← Core logic tests (52 tests)
-│   └── test_tui.py           ← TUI framework tests (75 tests)
-└── dist/
-    └── AgmerciumRecovery.pyz ← Portable zipapp (built)
+antigravity_database_manager.py   ← Entry point
+build_release.py                  ← Builds the cross-platform .pyz zipapp
+src/
+├── core/                         ← Domain logic, models, database operations
+│   ├── constants.py
+│   ├── models.py
+│   ├── protobuf.py
+│   ├── environment.py
+│   ├── artifacts.py
+│   ├── db_scanner.py
+│   ├── db_operations.py
+│   ├── diagnostic.py
+│   ├── storage_manager.py
+│   └── lifecycle.py
+├── ui_tui/                       ← Full-screen terminal UI
+│   ├── capabilities.py           ← Terminal capability detection
+│   ├── theme/                    ← Semantic colors, styles, gradients, icons
+│   ├── events.py                 ← Event bus, key bindings, focus management
+│   ├── core.py                   ← Component base, layout engine
+│   ├── components.py             ← Reusable UI components
+│   ├── animation.py              ← Easing, animated values, transitions
+│   ├── engine.py                 ← Double-buffered terminal I/O
+│   ├── app.py                    ← Application event loop
+│   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
+└── ui_headless/                  ← CLI parser and interactive menus
+    ├── cli_parser.py
+    ├── controller.py
+    └── logger.py
+tests/
+├── test_core.py                  ← Core logic tests (52 tests)
+└── test_tui.py                   ← TUI framework tests (113 tests)
 ```
 
-### Execution Phases
+### Recovery Pipeline Phases
 
 | Phase | Description |
 |-------|-------------|
-| **0. Backup Scanner** | Discovers existing backups, displays comparison table, offers restore or proceed |
-| **1. Pre-flight Checks** | Verifies IDE is closed, database exists, permissions are correct |
-| **2. Conversation Discovery** | Scans for `.pb` files and counts recoverable conversations |
-| **3. Secure Backup** | Creates a timestamped copy of `state.vscdb` before any writes |
-| **4. Database Injection** | Synthesizes Protobuf + JSON entries and commits to SQLite |
-| **5. Summary Report** | Displays statistics: injected, skipped, total |
+| **Discovery** | Scans `~/.gemini/antigravity/conversations/` for `.pb` files and reads surviving database metadata |
+| **Build** | Resolves titles and workspace bindings for each conversation |
+| **Backup** | Creates a timestamped copy of `state.vscdb` before any writes |
+| **Injection** | Rebuilds the Protobuf `trajectorySummaries` blob and synchronizes `ChatSessionStore.index` in a single SQLite transaction |
+| **Complete** | Reports statistics: conversations rebuilt, workspaces mapped, JSON entries added or patched |
 
 ---
 
@@ -188,170 +193,136 @@ build_release.py              ← Builds the cross-platform .pyz zipapp
 
 | Platform | Database Path | Status |
 |----------|---------------|--------|
-| **Windows** | `%APPDATA%\antigravity\User\globalStorage\state.vscdb` | ✅ Tested |
-| **macOS** | `~/Library/Application Support/antigravity/User/globalStorage/state.vscdb` | ✅ Supported |
-| **Linux** | `~/.config/Antigravity/User/globalStorage/state.vscdb` | ✅ Supported |
+| **Windows** | `%APPDATA%\antigravity\User\globalStorage\state.vscdb` | Tested |
+| **macOS** | `~/Library/Application Support/antigravity/User/globalStorage/state.vscdb` | Supported |
+| **Linux** | `~/.config/Antigravity/User/globalStorage/state.vscdb` | Supported |
 
-- **Python**: 3.10+
-- **Dependencies**: None (uses only Python standard library)
+- **Python:** 3.10+
+- **Dependencies:** None (standard library only)
+- **Current version:** 8.6.1
 
 ---
 
 ## Usage
 
-This tool provides **three interfaces** — choose whichever fits your workflow:
+Three interfaces are available — use whichever fits your workflow:
 
 | Interface | Launch Command | Best For |
 |-----------|---------------|----------|
-| **Full-Screen TUI** | `python antigravity_database_manager.py` | Interactive exploration, visual browsing |
+| **Full-Screen TUI** | `python antigravity_database_manager.py` | Interactive exploration and visual browsing |
 | **Headless Interactive** | `python antigravity_database_manager.py --headless` | Terminals without TUI support, SSH sessions |
-| **CLI Subcommands** | `python antigravity_database_manager.py <command>` | Scripting, CI/CD automation, one-shot tasks |
+| **CLI Subcommands** | `python antigravity_database_manager.py <command>` | Scripting, automation, one-shot tasks |
+
+When stdout is not a TTY (piped output, some CI environments), the tool automatically falls back to headless interactive mode unless a subcommand is provided.
 
 ---
 
-### Full-Screen TUI (Terminal User Interface)
+### Full-Screen TUI
 
-Launch with no arguments to enter the full-screen split-pane database manager:
+Launch with no arguments:
 
 ```bash
 python antigravity_database_manager.py
 ```
 
-The TUI uses an **MVU (Model-View-Update) architecture** powered by an enterprise-grade component framework (semantic theming, animated rendering, 20+ reusable components). It provides 8 screens:
+The TUI provides eight screens:
 
 #### 1. Home — Database Dashboard
 
-<p align="center">
-  <img src="docs/HomeView.png" alt="Home — Database Dashboard" width="700">
-</p>
-
-The default landing screen. Shows a split pane with all databases (current + backups) on the left and a health report on the right.
+Split pane: databases (current and backups) on the left, health report on the right.
 
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Navigate between databases |
-| `Enter` | Open the Action Menu for the selected database |
-| `S` | Refresh scan (re-scan all databases) |
+| `Enter` | Open the action menu for the selected database |
+| `S` | Refresh scan |
 | `B` | Create a manual backup of the selected database |
-| `R` | Jump directly to Recovery Wizard |
-| `W` | Jump directly to Workspace Diagnostics |
-| `T` | Jump directly to Storage.json Browser |
+| `R` | Open Recovery Wizard |
+| `W` | Open Workspace Diagnostics |
+| `T` | Open Storage.json Browser |
 | `?` | Toggle Help overlay |
 | `Q` / `Esc` | Quit |
 
-**Action Menu (current database):**
+**Action menu (current database):** Browse Conversations, Run Full Recovery, Create Backup, Merge From Another DB, Workspace Diagnostics, Manage Storage, Reset Database (Empty).
 
-| Option | Description |
-|--------|-------------|
-| Browse Conversations | Open the Conversation Browser for this database |
-| Run Full Recovery | Launch the 6-phase Recovery Wizard |
-| Create Backup | Create a timestamped backup copy |
-| Merge From Another DB | Launch the Merge Wizard |
-| Workspace Diagnostics | Inspect workspace URI bindings and filesystem health |
-| Manage Storage | Open the Storage.json Browser |
-| Reset Database (Empty) | Reset the database to empty (backup created first, with confirmation) |
-
-**Action Menu (backup database):**
-
-| Option | Description |
-|--------|-------------|
-| Browse Conversations | Inspect conversations in this backup |
-| Restore This Backup | Replace current database with this backup |
-| Compare with Current | Open Merge Wizard pre-loaded with this backup as source |
-| Delete This Backup | Remove this backup file |
+**Action menu (backup database):** Browse Conversations, Restore This Backup, Compare with Current, Delete This Backup.
 
 #### 2. Conversation Browser
 
-<p align="center">
-  <img src="docs/ConversationView.png" alt="Conversation Browser" width="700">
-</p>
-
-Browse, search, rename, and delete individual conversations. Split pane shows the conversation list on the left and details (UUID, workspace, timestamps, sync status) on the right.
+Browse, search, rename, and delete conversations. Split pane: list on the left, details (UUID, workspace, timestamps, sync status) on the right.
 
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Navigate between conversations |
-| `Enter` | Open the context menu (Inspect / Rename / Delete) |
-| `/` | Activate search/filter mode — type to filter by title |
-| `N` | Rename the selected conversation |
-| `D` | Delete the selected conversation (with confirmation) |
+| `Enter` | Context menu (Inspect / Rename / Delete) |
+| `/` | Search/filter by title |
+| `N` | Rename selected conversation |
+| `D` | Delete selected conversation (with confirmation) |
+| `C` | Copy selected conversation UUID to clipboard |
 | `Esc` | Return to previous screen |
 
 #### 3. Raw Payload Inspector
 
-View the raw JSON payload of a specific conversation, scrollable with line counts.
+View the raw JSON payload of a conversation.
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` | Scroll through the payload |
+| `↑` `↓` / `PgUp` `PgDn` / `Home` `End` | Scroll |
 | `Esc` | Return to Conversation Browser |
 
 #### 4. Recovery Wizard
 
-<p align="center">
-  <img src="docs/RecoveryView.png" alt="Recovery Wizard" width="700">
-</p>
+Guided recovery with a progress indicator. Press `Enter` to start.
 
-Visual, guided execution of the 6-phase recovery pipeline with a real-time progress indicator:
-
-| Phase | Description |
-|-------|-------------|
+| Step | Description |
+|------|-------------|
 | **Backup** | Creates a safety backup of the current database |
 | **Discovery** | Scans `~/.gemini/antigravity/conversations/` for `.pb` files |
-| **Titles** | Extracts titles from brain artifacts (`task.md`, `implementation_plan.md`, etc.) |
-| **Injection** | Synthesizes Protobuf entries and injects into `state.vscdb` |
-| **JSON** | Synchronizes the JSON `ChatSessionStore.index` |
+| **Titles** | Resolves titles from preserved metadata or `.pb` timestamps |
+| **Injection** | Rebuilds Protobuf entries in `state.vscdb` |
+| **JSON** | Synchronizes `ChatSessionStore.index` |
 | **Done** | Displays summary statistics |
-
-Press `Enter` to begin. After completion, a full results summary is displayed.
 
 #### 5. Merge Wizard
 
-Merge conversations from a source database (backup or external) into the current database with cherry-pick support:
+Merge conversations from a source database (backup or external) into the current database:
 
-1. **Source Selection** — Type or paste the path to the source `.vscdb` file
-2. **Diff Preview** — See which conversations are new, shared, or target-only
-3. **Cherry-Pick** — Use `Space` to toggle individual conversations, `A` to select all, `N` to select none
-4. **Strategy Selection** — Choose `Additive` (safe, only add missing) or `Overwrite` (replace shared entries)
+1. **Source Selection** — Enter the path to the source `.vscdb` file
+2. **Diff Preview** — See new, shared, and target-only conversations
+3. **Cherry-Pick** — `Space` toggles entries, `A` selects all, `N` clears selection
+4. **Strategy** — `1` for Additive (safe), `2` for Overwrite
 5. **Execution** — Merge runs with automatic backup
 
 #### 6. Workspace Browser
 
-Inspect all unique workspace URIs in the database with filesystem health checks:
-
-| Column | Description |
-|--------|-------------|
-| **✓** | Workspace exists and is accessible |
-| **⚠** | Workspace exists but has permission issues |
-| **✗** | Workspace path does not exist on disk |
-| **Convs** | Number of conversations bound to this workspace |
+Inspect workspace URIs with filesystem health checks (`✓` accessible, `⚠` permission issues, `✗` missing path).
 
 #### 7. Storage.json Browser
 
-Browse, edit, and manage the IDE's `storage.json` configuration file:
+Browse, edit, and delete keys in the IDE's `storage.json` configuration.
 
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Navigate between keys |
-| `E` | Edit the value of the selected key |
+| `E` | Edit the selected key's value |
 | `D` | Delete the selected key (with confirmation) |
 | `Esc` | Return to Home |
 
 #### 8. Help Overlay
 
-Press `?` from any screen to view a complete keyboard shortcut reference.
+Press `?` from any screen for keyboard shortcut reference.
 
 ---
 
 ### Headless Interactive Mode
 
-For environments without TUI support (SSH, minimal terminals, screen readers):
+For environments without TUI support:
 
 ```bash
 python antigravity_database_manager.py --headless
 ```
 
-Presents a numbered menu with all 10 operations:
+Presents a numbered menu with ten operations:
 
 ```
   AGMERCIUM DB MANAGER — Main Menu
@@ -369,78 +340,75 @@ Presents a numbered menu with all 10 operations:
   [Q]  Quit
 ```
 
-Each menu provides guided, step-by-step interactive prompts with confirmation dialogs.
+`diagnose` and `repair` are available via CLI subcommands (see below), not in this menu.
 
 ---
 
-### CLI Subcommands (Non-Interactive)
+### CLI Subcommands
 
-For scripting, automation, and CI/CD. All subcommands auto-detect the database path and exit with standard codes (`0` = success, `1` = error).
+For scripting and automation. All subcommands auto-detect the database path and exit with standard codes (`0` = success, non-zero = error).
 
 #### `scan` — Database Overview
 
 ```bash
-python antigravity_database_manager.py scan           # Human-readable table
-python antigravity_database_manager.py scan --json     # JSON output
+python antigravity_database_manager.py scan
+python antigravity_database_manager.py scan --json
 ```
 
-#### `recover` — Full 6-Phase Recovery Pipeline
+#### `recover` — Full Recovery Pipeline
 
 ```bash
-python antigravity_database_manager.py recover          # Human-readable progress
-python antigravity_database_manager.py recover --json   # JSON output (for CI/CD)
+python antigravity_database_manager.py recover
+python antigravity_database_manager.py recover --json
 ```
 
-Runs backup → discovery → title extraction → Protobuf injection → JSON sync → summary. Outputs progress messages to stdout. Use `--json` for machine-readable output.
+Runs discovery → build → backup → injection → summary. Use `--json` for machine-readable output.
 
 #### `health` — Database Health Check
 
 ```bash
-python antigravity_database_manager.py health          # Human-readable report
-python antigravity_database_manager.py health --json   # JSON output
+python antigravity_database_manager.py health
+python antigravity_database_manager.py health --json
 ```
 
-Reports: size, conversation/titled counts, workspace count, sync status, orphan detection.
+Reports size, conversation counts, workspace count, sync status, and orphan detection.
 
-#### `diagnose` — Corruption Diagnostic Engine
+#### `diagnose` — Corruption Diagnostic
 
 ```bash
-python antigravity_database_manager.py diagnose                      # Scan current DB
-python antigravity_database_manager.py diagnose --target path.vscdb   # Scan external DB
-python antigravity_database_manager.py diagnose --json               # JSON output
+python antigravity_database_manager.py diagnose
+python antigravity_database_manager.py diagnose --target path.vscdb
+python antigravity_database_manager.py diagnose --json
 ```
 
-Byte-level Protobuf scanner detects: ghost bytes (U+FFFD), double-wrapping, UUID mismatches, invalid wire types, field ordering violations.
+Byte-level Protobuf scanner detects ghost bytes, double-wrapping, UUID mismatches, invalid wire types, and field ordering violations.
 
-#### `repair` — Autonomous Repair Engine
+#### `repair` — Autonomous Repair
 
 ```bash
-python antigravity_database_manager.py repair                      # Repair current DB
-python antigravity_database_manager.py repair --target path.vscdb   # Repair external DB
+python antigravity_database_manager.py repair
+python antigravity_database_manager.py repair --target path.vscdb
 ```
 
-Auto-fixes all corruptions found by `diagnose`. Creates a backup first. Reports: entries scanned, repaired, preserved, ghost bytes stripped, double wraps fixed, UUID mismatches fixed.
+Auto-fixes corruptions found by `diagnose`. Creates a backup first.
 
 #### `merge` — Database Merge
 
 ```bash
-# Additive merge (safe — only add missing conversations)
 python antigravity_database_manager.py merge --source backup.vscdb
-
-# Overwrite merge (replace shared entries with source versions)
 python antigravity_database_manager.py merge --source backup.vscdb --strategy overwrite
-
-# Cherry-pick specific conversations by UUID
 python antigravity_database_manager.py merge --source backup.vscdb --cherry-pick "uuid1,uuid2,uuid3"
 ```
 
 #### `backup` — Backup Management
 
 ```bash
-python antigravity_database_manager.py backup list        # List all backups (same as scan)
-python antigravity_database_manager.py backup create      # Create a new backup
-python antigravity_database_manager.py backup restore 1   # Restore backup #1 (from scan output)
+python antigravity_database_manager.py backup list
+python antigravity_database_manager.py backup create
+python antigravity_database_manager.py backup restore 1
 ```
+
+`restore` uses the backup index from `scan` output (backups only, excluding the current database).
 
 #### `create` — Create Empty Database
 
@@ -451,33 +419,33 @@ python antigravity_database_manager.py create --output /path/to/new.vscdb
 #### `conversations` — Conversation Management
 
 ```bash
-python antigravity_database_manager.py conversations list                      # List all conversations
-python antigravity_database_manager.py conversations list --json               # JSON output
-python antigravity_database_manager.py conversations show <uuid>               # Show raw JSON payload
-python antigravity_database_manager.py conversations delete <uuid>             # Delete (with confirmation)
-python antigravity_database_manager.py conversations delete <uuid> --force     # Delete (skip confirmation)
-python antigravity_database_manager.py conversations rename <uuid> "New Title" # Rename a conversation
+python antigravity_database_manager.py conversations list
+python antigravity_database_manager.py conversations list --json
+python antigravity_database_manager.py conversations show <uuid>
+python antigravity_database_manager.py conversations delete <uuid>
+python antigravity_database_manager.py conversations delete <uuid> --force
+python antigravity_database_manager.py conversations rename <uuid> "New Title"
 ```
 
-#### `workspace` — Workspace Diagnostics & Migration
+#### `workspace` — Workspace Diagnostics and Migration
 
 ```bash
-python antigravity_database_manager.py workspace list                  # List all workspaces
-python antigravity_database_manager.py workspace list --json           # JSON output
-python antigravity_database_manager.py workspace check                 # Filesystem health check
-python antigravity_database_manager.py workspace migrate /new/path     # Rebind all conversations to new path
+python antigravity_database_manager.py workspace list
+python antigravity_database_manager.py workspace list --json
+python antigravity_database_manager.py workspace check
+python antigravity_database_manager.py workspace migrate /new/path
 ```
 
-The `migrate` command is critical for Bug #3 (workspace rebinding) and Bug #7 (Windows path casing).
+`migrate` rebinds all conversations to a new workspace path — useful for Bug #3 (workspace rebinding) and Bug #7 (Windows path casing).
 
 #### `storage` — Storage.json Management
 
 ```bash
-python antigravity_database_manager.py storage inspect                    # List all keys
-python antigravity_database_manager.py storage inspect --json             # JSON output
-python antigravity_database_manager.py storage backup                     # Create a backup
-python antigravity_database_manager.py storage patch "key.path" "value"   # Set a value
-python antigravity_database_manager.py storage delete "key.path"          # Delete a key
+python antigravity_database_manager.py storage inspect
+python antigravity_database_manager.py storage inspect --json
+python antigravity_database_manager.py storage backup
+python antigravity_database_manager.py storage patch "key.path" "value"
+python antigravity_database_manager.py storage delete "key.path"
 ```
 
 ---
@@ -487,13 +455,11 @@ python antigravity_database_manager.py storage delete "key.path"          # Dele
 | Flag | Description |
 |------|-------------|
 | `--headless` | Force headless interactive mode (no TUI) |
-| `--json` | Output results as JSON (available for `scan`, `recover`, `health`, `diagnose`, `conversations list`, `workspace list`, `storage inspect`) |
+| `--json` | JSON output (supported on `scan`, `recover`, `health`, `diagnose`, `conversations list`, `workspace list`, `storage inspect`) |
 | `--version` / `-v` | Display version number |
-| `--help` / `-h` | Display help documentation |
+| `--help` / `-h` | Display help |
 
 ### Building the Zipapp
-
-To build a portable, single-file zipapp (runs on any platform with Python 3.10+):
 
 ```bash
 python build_release.py                 # Outputs dist/AgmerciumRecovery.pyz
@@ -501,8 +467,6 @@ python dist/AgmerciumRecovery.pyz scan  # Run the built zipapp
 ```
 
 ### Debug Mode
-
-Set the environment variable `AGMERCIUM_DEBUG=1` to enable verbose debug logging:
 
 ```bash
 # Linux/macOS
@@ -512,83 +476,99 @@ AGMERCIUM_DEBUG=1 python antigravity_database_manager.py
 $env:AGMERCIUM_DEBUG = "1"; python antigravity_database_manager.py
 ```
 
+### Running Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ---
 
 ## Safety Guarantees
 
-- **Automatic backup**: A timestamped copy of your database is created before any writes.
-- **Non-destructive merge**: Existing index entries are preserved; only missing entries are injected.
-- **Automatic rollback**: If any database error occurs, the backup is restored immediately.
-- **Read-only on `.pb` files**: Your conversation data files are never modified.
-- **No network access**: This tool operates entirely offline — zero external requests.
+- **Automatic backup:** A timestamped copy of your database is created before any writes.
+- **Non-destructive merge:** Existing index entries are preserved by default; additive merge only injects missing entries.
+- **Automatic rollback:** If a database error occurs during recovery, the pre-write backup is restored.
+- **Read-only on `.pb` files:** Conversation payload files are never modified.
+- **No network access:** The tool operates entirely offline.
 
 ---
 
-## Backup & Undo
+## Backup and Undo
 
-After running the tool, your original database backup is preserved at:
+Backups use this naming pattern:
 
 ```
-<database_path>.agmercium_recovery_<timestamp>
+<database_path>.agmercium_recovery_<unix_timestamp>_<reason>
 ```
 
-To undo the recovery, simply copy the backup file over your `state.vscdb`:
+For example: `state.vscdb.agmercium_recovery_1710820594_before_recovery`
+
+To undo a recovery, copy the backup over your live database:
 
 ```bash
-# Example (Windows PowerShell)
-Copy-Item "state.vscdb.agmercium_recovery_1710820594" -Destination "state.vscdb" -Force
+# Windows (PowerShell)
+Copy-Item "state.vscdb.agmercium_recovery_1710820594_before_recovery" -Destination "state.vscdb" -Force
 
-# Example (Linux/macOS)
-cp state.vscdb.agmercium_recovery_1710820594 state.vscdb
+# Linux/macOS
+cp state.vscdb.agmercium_recovery_1710820594_before_recovery state.vscdb
 ```
 
 ---
 
 ## FAQ
 
-### Q: Will I lose any existing history?
-**No.** The tool only *adds* missing entries. It never removes or overwrites existing index entries.
+### Will I lose any existing history?
 
-### Q: What if I have conversations from multiple projects?
-Run the tool once per project. Each run will prompt you for the project workspace path.
+No. Recovery and additive merge only add or update missing entries. They do not remove existing index entries unless you explicitly delete conversations or use overwrite merge.
 
-### Q: Can I run this while the IDE is open?
-**No.** The IDE will overwrite the database when it shuts down. You must close it first.
+### What if I have conversations from multiple projects?
 
-### Q: What if the tool crashes mid-run?
-The automatic backup is created before any writes. Your database will be intact. You can also restore from the backup file manually.
+Run recovery once. The pipeline scans **all** `.pb` files under `~/.gemini/antigravity/conversations/` and rebuilds indices for every conversation it finds, assigning workspaces from preserved metadata or dominant-workspace fallback.
 
-### Q: Will the conversation titles be correct?
-**Yes.** The tool extracts titles from your brain artifacts (`task.md`, `implementation_plan.md`, `walkthrough.md`). If no artifacts exist for a conversation, a clean timestamp-based title is generated (e.g., `Conversation (Mar 19) a1b2c3d4`).
+### Can I run this while the IDE is open?
+
+No. The IDE may overwrite the database when it shuts down. Close Antigravity completely before running this tool.
+
+### What if the tool crashes mid-run?
+
+A backup is created before any writes. If injection fails, the tool attempts automatic rollback. You can also restore manually from the backup file.
+
+### Will conversation titles be correct?
+
+Titles are taken from **preserved database metadata** when any fragments remain after the index wipe. When no title survives, the tool generates a readable fallback from the `.pb` file's modification time (for example, `Conversation (Mar 19) a1b2c3d4`). You can rename conversations afterward via the TUI or `conversations rename`.
+
+### Where is the Protobuf schema documented?
+
+See [docs/schema.proto](docs/schema.proto) for the reverse-engineered `trajectorySummaries` wire format.
 
 ---
 
 ## Reporting the Bug to Google
 
-If you've been affected by this bug, please help the community by reporting it to Google through the official channels:
+If you have been affected, please report it through official channels:
 
-1. **In-App (Recommended)**: Click your profile icon → **Report Issue**
-2. **In-App (Agent Manager)**: Click **Provide Feedback** in the bottom-left corner
-3. **Google Developer Forums**: Post in the Antigravity IDE section at [google.dev](https://google.dev)
-4. **Google Bug Hunters**: For security-related issues, visit [bughunters.google.com](https://bughunters.google.com)
-5. **Support Tickets**: Visit the [Antigravity Support Center](https://antigravityide.help) for direct ticket submission
+1. **In-App (Recommended):** Profile icon → **Report Issue**
+2. **In-App (Agent Manager):** **Provide Feedback** in the bottom-left corner
+3. **Google Developer Forums:** [discuss.ai.google.dev](https://discuss.ai.google.dev)
+4. **Google Bug Hunters:** [bughunters.google.com](https://bughunters.google.com) (security-related issues)
+5. **Support:** [antigravityide.help](https://antigravityide.help)
 
-When reporting, include:
-- Your OS and Antigravity IDE version
-- Whether the history loss occurred after an update, restart, or crash
-- The number of conversations affected
+When reporting, include your OS, Antigravity IDE version, whether history loss followed an update/restart/crash, and how many conversations were affected.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+For security issues, see [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Disclaimer
 
-This is an **unofficial** community workaround project. It is **not** affiliated with, endorsed by, sponsored by, or in any way related to Google LLC or the Antigravity IDE team. All product names, logos, and brands are property of their respective owners. Use at your own discretion. The tool creates automatic backups before any modifications to minimize risk.
+This is an **unofficial** community workaround project. It is **not** affiliated with, endorsed by, sponsored by, or in any way related to Google LLC or the Antigravity IDE team. All product names, logos, and brands are property of their respective owners. Use at your own discretion. The tool creates automatic backups before modifications to minimize risk.
 
 ---
 
@@ -596,7 +576,7 @@ This is an **unofficial** community workaround project. It is **not** affiliated
 
 This project is licensed under **The Unlicense** — dedicated to the public domain. See [LICENCE.md](LICENCE.md) for the full text.
 
-You are free to copy, modify, distribute, and use this software for any purpose, commercial or non-commercial, without any restrictions whatsoever.
+You are free to copy, modify, distribute, and use this software for any purpose without restriction.
 
 ---
 
