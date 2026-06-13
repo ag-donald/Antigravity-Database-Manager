@@ -416,18 +416,62 @@ def analyze_workspaces(db_path: str) -> list[WorkspaceDiagnostic]:
 
 def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
     """
-    Scans the current DB and all available backups.
-    Returns the current DB at index 0, followed by backups newest-first.
+    Scans the current DB, any other detected primary DBs, and all of their backups.
     """
+    from .environment import EnvironmentResolver
+
+    # Normalize path strings for comparison
+    def norm(p: str) -> str:
+        return os.path.abspath(os.path.realpath(os.path.expanduser(p)))
+
+    norm_current = norm(current_db_path)
+
+    # 1. Get all candidate primary DB paths, ensuring current_db_path is first and unique
+    primary_paths = [current_db_path]
+    seen_norms = {norm_current}
+
+    candidates = EnvironmentResolver.get_antigravity_db_paths()
+    for c in candidates:
+        if os.path.isfile(c):
+            norm_c = norm(c)
+            if norm_c not in seen_norms:
+                primary_paths.append(c)
+                seen_norms.add(norm_c)
+
     snapshots: list[DatabaseSnapshot] = []
+    scanned_paths = set(seen_norms)
 
-    sn_current = scan_database(current_db_path, "CURRENT", is_current=True)
-    snapshots.append(sn_current)
+    # 2. Scan primary DBs
+    for p in primary_paths:
+        norm_p = norm(p)
+        is_current = (norm_p == norm_current)
 
-    db_dir = os.path.dirname(current_db_path)
-    backups = discover_backups(db_dir)
+        # Label the primary DBs
+        label = "CURRENT"
+        if "Antigravity IDE" in p:
+            label = "Antigravity IDE"
+        elif "Antigravity" in p or "antigravity" in p:
+            label = "Antigravity (deprecated)"
 
-    for b in backups:
+        sn = scan_database(p, label, is_current=is_current)
+        snapshots.append(sn)
+
+    # 3. Discover backups for each of the primary directories
+    discovered_backups = []
+    for p in primary_paths:
+        db_dir = os.path.dirname(p)
+        if os.path.isdir(db_dir):
+            for b in discover_backups(db_dir):
+                norm_b = norm(b)
+                if norm_b not in scanned_paths:
+                    scanned_paths.add(norm_b)
+                    prefix = "IDE Backup" if "Antigravity IDE" in p else "Depr Backup"
+                    discovered_backups.append((b, prefix))
+
+    # Sort backups newest first by modification time
+    discovered_backups.sort(key=lambda item: os.path.getmtime(item[0]), reverse=True)
+
+    for b, prefix in discovered_backups:
         try:
             basename = os.path.basename(b)
             ts_str = basename.rsplit(f"{BACKUP_PREFIX}_", 1)[-1]
@@ -435,12 +479,12 @@ def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
                 epoch_str, reason = ts_str.split("_", 1)
                 epoch = int(epoch_str)
                 time_str = time.strftime('%b %d %H:%M', time.localtime(epoch))
-                label = f"{time_str} ({reason})"
+                label = f"{prefix}: {time_str} ({reason})"
             else:
                 epoch = int(ts_str)
                 label = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch))
         except Exception:
-            label = "Unknown Backup"
+            label = f"{prefix}: Unknown"
 
         sn = scan_database(b, label, is_current=False)
         snapshots.append(sn)

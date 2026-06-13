@@ -59,7 +59,7 @@ class App:
         self.engine.set_title(f"{APP_NAME} v{VERSION}")
 
         try:
-            home = HomeView(self.ctx.db_path)
+            home = HomeView(self.ctx)
             self._push(home)
 
             while self.screen_stack:

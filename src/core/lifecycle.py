@@ -79,7 +79,8 @@ class ApplicationContext:
             sys.exit(2)
 
         # 2. Resolve paths
-        self.db_path = EnvironmentResolver.get_antigravity_db_path()
+        if not self.db_path:
+            self.db_path = EnvironmentResolver.get_antigravity_db_path()
         self.gem_base = EnvironmentResolver.get_gemini_base_path()
         self.convs_dir = os.path.join(self.gem_base, "conversations")
         self.brain_dir = os.path.join(self.gem_base, "brain")

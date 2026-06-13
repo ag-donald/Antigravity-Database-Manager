@@ -24,6 +24,25 @@ def run_interactive(ctx: ApplicationContext) -> int:
     """
     Logger.banner()
 
+    # Database path resolution / selection
+    from ..core.environment import EnvironmentResolver
+    if not ctx.db_path:
+        db_paths = [p for p in EnvironmentResolver.get_antigravity_db_paths() if os.path.isfile(p)]
+        if len(db_paths) > 1:
+            Logger.header("Multiple Databases Detected")
+            for idx, path in enumerate(db_paths):
+                label = "Antigravity IDE" if "Antigravity IDE" in path else "Antigravity (deprecated)"
+                print(f"  [{idx+1}] {label} at {path}")
+            print()
+            try:
+                ans = input(f"  Select database to manage [1-{len(db_paths)}] (default: 1): ").strip()
+                if ans:
+                    sel_idx = int(ans) - 1
+                    if 0 <= sel_idx < len(db_paths):
+                        ctx.db_path = db_paths[sel_idx]
+            except (KeyboardInterrupt, EOFError, ValueError):
+                pass
+
     # Pre-flight warnings
     warnings = ctx.perform_preflight_checks()
     for w in warnings:
@@ -54,6 +73,7 @@ def run_interactive(ctx: ApplicationContext) -> int:
         print("  [8]  Health Check")
         print("  [9]  Workspace Diagnostics")
         print("  [10] Manage Storage.json")
+        print("  [11] Switch Active Database")
         print("  [Q]  Quit")
         print()
 
@@ -83,6 +103,8 @@ def run_interactive(ctx: ApplicationContext) -> int:
             _menu_workspaces(ctx)
         elif choice == "10":
             _menu_storage(ctx)
+        elif choice == "11":
+            _menu_switch_db(ctx)
         elif choice in ("q", ""):
             break
         else:
@@ -470,6 +492,53 @@ def _menu_storage(ctx: ApplicationContext) -> None:
                     Logger.success(f"Deleted '{key}'")
                 except KeyError as exc:
                     Logger.error(str(exc))
+    except (KeyboardInterrupt, EOFError):
+        pass
+    _pause()
+
+
+def _menu_switch_db(ctx: ApplicationContext) -> None:
+    Logger.header("Switch Active Database")
+    from ..core.environment import EnvironmentResolver
+    db_paths = [p for p in EnvironmentResolver.get_antigravity_db_paths() if os.path.isfile(p)]
+
+    def norm(p: str) -> str:
+        return os.path.abspath(os.path.realpath(os.path.expanduser(p))) if p else ""
+
+    norm_active = norm(ctx.db_path)
+    print("  Detected Databases:")
+    for idx, path in enumerate(db_paths):
+        active_str = " (ACTIVE)" if norm(path) == norm_active else ""
+        label = "Antigravity IDE" if "Antigravity IDE" in path else "Antigravity (deprecated)"
+        print(f"    [{idx+1}] {label} at {path}{active_str}")
+
+    print()
+    try:
+        ans = input("  Select # to switch, or enter/paste a custom path (or Enter to cancel): ").strip()
+        if not ans:
+            return
+
+        try:
+            idx = int(ans) - 1
+            if 0 <= idx < len(db_paths):
+                ctx.db_path = db_paths[idx]
+                warnings = ctx.perform_preflight_checks()
+                for w in warnings:
+                    Logger.warn(w)
+                Logger.success(f"Switched to: {ctx.db_path}")
+                return
+        except ValueError:
+            pass
+
+        custom_path = norm(ans)
+        if os.path.isfile(custom_path):
+            ctx.db_path = custom_path
+            warnings = ctx.perform_preflight_checks()
+            for w in warnings:
+                Logger.warn(w)
+            Logger.success(f"Switched to: {ctx.db_path}")
+        else:
+            Logger.error(f"File not found: {custom_path}")
     except (KeyboardInterrupt, EOFError):
         pass
     _pause()

@@ -795,5 +795,75 @@ class TestWidgetTrunc(unittest.TestCase):
         self.assertIn("…", result)
 
 
+# ==============================================================================
+# TEST: MULTIPLE DATABASE RESOLUTION AND SCANNING
+# ==============================================================================
+
+class TestMultipleDatabaseResolution(unittest.TestCase):
+    """Tests for multiple database resolution and scanner scanning multiple dirs."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_db_paths_contains_candidates(self):
+        """get_antigravity_db_paths should return multiple candidate paths."""
+        from src.core.environment import EnvironmentResolver
+        paths = EnvironmentResolver.get_antigravity_db_paths()
+        self.assertGreater(len(paths), 1)
+        self.assertTrue(any("Antigravity IDE" in p for p in paths))
+        self.assertTrue(any("Antigravity" in p or "antigravity" in p for p in paths))
+
+    def test_scan_all_multiple_directories(self):
+        """scan_all should discover databases and backups from both directories."""
+        # Create mock directories
+        dir_new = os.path.join(self.tmpdir, "Antigravity IDE", "User", "globalStorage")
+        dir_old = os.path.join(self.tmpdir, "Antigravity", "User", "globalStorage")
+        os.makedirs(dir_new, exist_ok=True)
+        os.makedirs(dir_old, exist_ok=True)
+
+        db_new = os.path.join(dir_new, "state.vscdb")
+        db_old = os.path.join(dir_old, "state.vscdb")
+
+        # Populate them
+        _create_test_db(db_new, {"uuid-new": "New IDE"})
+        _create_test_db(db_old, {"uuid-old": "Old Deprecated"})
+
+        # Mock the get_antigravity_db_paths method to return our custom mock dirs
+        from src.core.environment import EnvironmentResolver
+        original_paths_fn = EnvironmentResolver.get_antigravity_db_paths
+        EnvironmentResolver.get_antigravity_db_paths = staticmethod(lambda: [db_new, db_old])
+
+        try:
+            # Create a backup inside dir_new
+            backup_new = os.path.join(dir_new, "state.vscdb.agmercium_recovery_1700000000_manual")
+            _create_test_db(backup_new, {"uuid-new": "New IDE"})
+
+            # Scan all with db_new as current
+            snapshots = scanner.scan_all(db_new)
+
+            # Should return 3 snapshots:
+            # 1. db_new (is_current=True)
+            # 2. db_old (is_current=False)
+            # 3. backup_new (is_current=False)
+            self.assertEqual(len(snapshots), 3)
+
+            paths = {s.path for s in snapshots}
+            self.assertIn(db_new, paths)
+            self.assertIn(db_old, paths)
+            self.assertIn(backup_new, paths)
+
+            current_snapshots = [s for s in snapshots if s.is_current]
+            self.assertEqual(len(current_snapshots), 1)
+            self.assertEqual(current_snapshots[0].path, db_new)
+            self.assertTrue(snapshots[0].is_current)
+            self.assertEqual(snapshots[0].path, db_new)
+        finally:
+            # Restore original method
+            EnvironmentResolver.get_antigravity_db_paths = original_paths_fn
+
+
 if __name__ == "__main__":
     unittest.main()
