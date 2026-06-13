@@ -730,7 +730,7 @@ class RecoveryWizardView:
             pane.append(f"  Target: {self.db_path}")
             pane.append("")
             pane.append(STYLES.dim.apply("  This will rebuild ALL conversations from .pb files,"))
-            pane.append(STYLES.dim.apply("  resolve titles from brain artifacts, and synchronize"))
+            pane.append(STYLES.dim.apply("  resolve titles from preserved metadata or .pb timestamps, and synchronize"))
             pane.append(STYLES.dim.apply("  the JSON index. A full backup is created first."))
             pane.append("")
             pane.append(STYLES.info.apply(f"  {Icons.POINTER} Press Enter to begin."))

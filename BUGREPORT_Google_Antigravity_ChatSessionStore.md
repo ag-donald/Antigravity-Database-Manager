@@ -152,17 +152,21 @@ We have developed and released an open-source recovery tool that rebuilds both i
 ### How It Works
 
 1. Discovers all `.pb` conversation files in `~/.gemini/antigravity/conversations/`.
-2. Extracts titles from brain artifacts (`task.md`, `implementation_plan.md`, `walkthrough.md`).
-3. Synthesizes Protobuf entries with byte-accurate Wire Type 2 nested schemas.
-4. Merges new entries into the existing indices (non-destructive — preserves cloud-only conversations).
-5. Creates automatic timestamped backups before any writes.
+2. Reads any surviving title and workspace metadata still present in the database.
+3. Resolves titles from preserved metadata when available; otherwise generates timestamp-based titles from `.pb` file times.
+4. Synthesizes Protobuf entries with byte-accurate Wire Type 2 nested schemas (Fields 9 and 17).
+5. Merges new entries into both indices (non-destructive — preserves cloud-only conversations).
+6. Creates automatic timestamped backups before any writes (`{db}.agmercium_recovery_{timestamp}_{reason}`).
 
 ### Usage
 
 ```bash
 # Close the IDE first (mandatory!)
+python antigravity_database_manager.py recover
+# Reopen IDE → history restored
+
+# Or use the full interactive TUI:
 python antigravity_database_manager.py
-# Follow prompts → reopen IDE → history restored
 ```
 
 ---
@@ -198,4 +202,4 @@ Email: contact@agmercium.com
 
 ---
 
-*This report was prepared using the Agmercium Antigravity IDE Database Management Hub v8.5.1.*
+*This report was prepared using the Agmercium Antigravity IDE Database Management Hub v8.6.1.*

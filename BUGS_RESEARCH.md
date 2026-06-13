@@ -6,6 +6,8 @@
 
 > **This document is an independent, community-authored catalog of every known failure mode** that causes conversation history loss in the Antigravity IDE. Each bug includes its trigger, symptoms, technical root cause, and how this Database Manager solves it.
 
+For tool usage, recovery steps, and CLI reference, see [README.md](README.md).
+
 ---
 
 ## Bug #1 — IDE Update Index Wipe
@@ -17,7 +19,7 @@ The most commonly reported bug. Both internal indices (`ChatSessionStore.index` 
 | **Trigger** | Updating the IDE to a new version (v1.18.x → v1.19.x, v1.20.x, etc.) |
 | **Symptoms** | All conversations vanish from the sidebar immediately after update. `.pb` files remain on disk untouched. |
 | **Root Cause** | The IDE's update migration pipeline does not preserve the `state.vscdb` key `chat.ChatSessionStore.index` — it re-initializes to `{"version":1,"entries":{}}`. The Protobuf `trajectorySummaries` blob is also zeroed. |
-| **Our Fix** | Full 6-phase recovery pipeline scans `.pb` files, extracts titles from brain artifacts, and rebuilds both indices byte-accurately. |
+| **Our Fix** | Full recovery pipeline scans `.pb` files, resolves titles from preserved database metadata or `.pb` timestamps, and rebuilds both indices byte-accurately. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -178,7 +180,7 @@ Conversations created in scratchpad / non-project contexts are completely inacce
 | **Trigger** | Upgrading from IDE versions ≤ v1.16.5 to v1.18.x or later |
 | **Symptoms** | History panel shows a red "disabled" icon for scratch sessions. No conversations are accessible, even through the Agent Manager. `.pb` files exist on disk with valid data. |
 | **Root Cause** | The v1.18.x update changed how workspace-less ("scratch") conversations are indexed. Conversations without a workspace binding are no longer rendered by the new UI. The migration pathway does not backfill workspace data for existing scratch conversations. |
-| **Our Fix** | Recovery pipeline uses workspace auto-inference (parsing `file:///` URLs in brain artifacts) to retroactively bind orphaned conversations to the correct workspace. Interactive batch assignment handles unmapped conversations. |
+| **Our Fix** | Recovery pipeline assigns workspaces from surviving Protobuf hints and dominant-workspace fallback for unmapped conversations. Use `workspace migrate` to rebind conversations after the fact. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -205,4 +207,4 @@ All 11 bugs stem from the same fundamental architectural flaw: the IDE's failure
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — Loses UUID-to-conversation mappings
 3. **`storage.json`** — Workspace binding metadata falls out of sync
 
-The raw `.pb` data files at `~/.gemini/antigravity/conversations/` and brain artifacts at `~/.gemini/antigravity/brain/` are **never affected**. This means the data is fully recoverable — which is exactly what this Database Manager does.
+The raw `.pb` data files at `~/.gemini/antigravity/conversations/` are **never modified** by this tool. Recovery is possible because conversation payloads survive on disk — which is exactly what this Database Manager rebuilds from.

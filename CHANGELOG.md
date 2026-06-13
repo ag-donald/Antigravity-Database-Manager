@@ -10,7 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
-_Use this section for changes merged to the default branch before the next versioned release._
+### Changed
+- **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (165 total). Removed inaccurate brain-artifact file references from user-facing docs.
 
 ## [8.6.1] - 2026-04-07
 
@@ -123,7 +124,7 @@ _Use this section for changes merged to the default branch before the next versi
 
 ### Added
 - **Partial-record recovery** — Titles and tool state recovered from partially damaged Protobuf records when possible.
-- **Workspace inference** — Workspace paths inferred from `file:///` URLs in Markdown brain artifacts.
+- **Workspace inference** — Workspace paths inferred from surviving Protobuf hints and dominant-workspace fallback during recovery.
 - **Batch workspace assignment** — Interactive menu for unmapped conversations, including apply-to-all style actions.
 - **Timestamp repair** — Injects missing modification/creation timestamps when the IDE omitted them.
 
@@ -167,7 +168,7 @@ _Use this section for changes merged to the default branch before the next versi
 - **Safety** — Timestamped database backups before writes.
 - **Protobuf** — Wire-type-2 encoder for nested trajectory fields (including fields 9 and 17).
 - **JSON index** — Non-destructive merge of `chat.ChatSessionStore.index` entries.
-- **Titles** — Extraction from `task.md`, `implementation_plan.md`, and `walkthrough.md` where present; fallbacks from overview logs and timestamps.
+- **Titles** — Resolved from preserved database metadata when available; timestamp-based fallbacks from `.pb` modification times.
 - **Errors** — Rollback to backup on database write failures; `--help` and `--version`; debug logging via `AGMERCIUM_DEBUG=1`.
 - **`Logger`** — Shared severity-tagged logging helper.
 - **Reporting** — Phase summary table at end of recovery run.

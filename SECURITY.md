@@ -8,9 +8,11 @@
 
 This unofficial community Database Management Hub operates **entirely offline** on local files. It:
 - Makes **no network requests** of any kind
-- Reads only from `~/.gemini/antigravity/` (conversations, brain artifacts)
-- Writes only to the IDE's `state.vscdb` SQLite database
-- Creates a timestamped backup with descriptive suffixes before any modifications
+- Reads conversation `.pb` files and other local data under `~/.gemini/antigravity/` (read-only)
+- Writes only to the IDE's `state.vscdb` SQLite database and `storage.json` (when using storage subcommands)
+- Creates timestamped backups before any modifications (`{db}.agmercium_recovery_{timestamp}_{reason}`)
+
+For tool usage, recovery steps, and CLI reference, see [README.md](README.md).
 
 ## Reporting a Vulnerability
 

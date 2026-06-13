@@ -59,7 +59,7 @@ Open an issue with the `enhancement` label describing:
 antigravity_database_manager.py   ← Entry point
 build_release.py                  ← Builds the cross-platform .pyz zipapp
 src/
-├── core/                ← Domain logic, models, and robust database operations
+├── core/                         ← Domain logic, models, database operations
 │   ├── constants.py
 │   ├── models.py
 │   ├── protobuf.py
@@ -70,23 +70,26 @@ src/
 │   ├── diagnostic.py
 │   ├── storage_manager.py
 │   └── lifecycle.py
-├── ui_tui/              ← Enterprise-grade Component-based TUI Framework
-│   ├── theme.py         ← Semantic colors, styles, gradients, icons
-│   ├── events.py        ← EventBus, KeyBindingManager, FocusManager
-│   ├── core.py          ← Component base, constraint sizing, layout engine
-│   ├── components.py    ← 20+ production UI components
-│   ├── animation.py     ← Easing functions, AnimatedValue, AnimationManager
-│   ├── engine.py        ← Double-buffered terminal I/O
-│   ├── app.py           ← Animation-aware MVU event loop
-│   └── views.py         ← 8 MVU screens
-└── ui_headless/         ← Command-line Interface and Interactive Prompts
+├── ui_tui/                       ← Full-screen terminal UI
+│   ├── capabilities.py           ← Terminal capability detection
+│   ├── theme/                    ← Semantic colors, styles, gradients, icons
+│   ├── events.py                 ← Event bus, key bindings, focus management
+│   ├── core.py                   ← Component base, layout engine
+│   ├── components.py             ← Reusable UI components
+│   ├── animation.py              ← Easing, animated values, transitions
+│   ├── engine.py                 ← Double-buffered terminal I/O
+│   ├── app.py                    ← Application event loop
+│   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
+└── ui_headless/                  ← CLI parser and interactive menus
     ├── cli_parser.py
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py         ← Core logic tests (52 tests)
-└── test_tui.py          ← TUI framework tests (75 tests)
+├── test_core.py                  ← Core logic tests (52 tests)
+└── test_tui.py                   ← TUI framework tests (113 tests)
 ```
+
+See [README.md](README.md) for usage, recovery behavior, and CLI reference.
 
 ### Commit Message Format
 
