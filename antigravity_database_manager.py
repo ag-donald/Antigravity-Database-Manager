@@ -13,9 +13,9 @@
   Python:       3.10+
   Dependencies: None (standard library only)
 
-  A production-ready, enterprise-grade utility to manage the internal SQLite
-  databases used by the Google Antigravity IDE. Features a world-class TUI,
-  headless CLI automation, and safety-first atomic operations.
+  Utility to manage the internal SQLite databases used by the Google
+  Antigravity IDE. Includes a full-screen TUI, headless CLI automation,
+  and safety-first atomic operations.
 
   Usage:
     Interactive TUI:              python antigravity_database_manager.py

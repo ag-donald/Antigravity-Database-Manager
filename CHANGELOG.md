@@ -12,6 +12,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ### Changed
 - **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (165 total). Removed inaccurate brain-artifact file references from user-facing docs.
+- **`src/core/artifacts.py`** — Removed hallucinated title-extraction paths (`task.md`, `implementation_plan.md`, `walkthrough.md`). Module now only infers workspace paths from local `file:///` URIs.
+- **`resolve_title`** — Titles resolve from preserved database metadata, then `.pb` timestamp fallbacks.
+- **Entry point / TUI** — Trimmed marketing language from module docstrings.
 
 ## [8.6.1] - 2026-04-07
 

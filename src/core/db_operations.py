@@ -432,19 +432,15 @@ def execute_selective_merge(source_path: str, target_path: str,
 # ==============================================================================
 
 def resolve_title(cid: str, existing_titles: dict[str, str],
-                  brain_dir: str, convs_dir: str) -> tuple[str, str]:
+                  convs_dir: str) -> tuple[str, str]:
     """
     Determines the best title for a conversation.
 
-    Priority: brain artifact > preserved DB title > timestamp fallback.
+    Priority: preserved DB title > timestamp fallback.
 
     Returns:
-        (title, source_label) where source_label is 'brain', 'preserved', or 'fallback'.
+        (title, source_label) where source_label is 'preserved' or 'fallback'.
     """
-    brain_title = ArtifactParser.extract_title(cid, brain_dir)
-    if brain_title:
-        return brain_title, "brain"
-
     if cid in existing_titles:
         return existing_titles[cid], "preserved"
 
@@ -531,7 +527,7 @@ def run_recovery_pipeline(
             except Exception:
                 pass
 
-    # Auto-assign workspaces from brain artifacts
+    # Auto-assign workspaces from surviving Protobuf hints and local metadata
     for cid in all_pbs:
         if cid not in ws_assignments:
             inner = existing_inner_blobs.get(cid)
@@ -557,10 +553,10 @@ def run_recovery_pipeline(
     # Resolve titles and build entries
     _progress("injection", "Building Protobuf entries...")
     resolved: list[tuple[str, str, str, Optional[bytes], bool]] = []
-    stats = {"brain": 0, "preserved": 0, "fallback": 0}
+    stats = {"preserved": 0, "fallback": 0}
 
     for cid in all_pbs:
-        title, source = resolve_title(cid, existing_titles, brain_dir, convs_dir)
+        title, source = resolve_title(cid, existing_titles, convs_dir)
         inner_data = existing_inner_blobs.get(cid)
         has_ws = bool(inner_data and ProtobufEncoder.extract_workspace_hint(inner_data))
         resolved.append((cid, title, source, inner_data, has_ws))

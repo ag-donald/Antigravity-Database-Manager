@@ -1,16 +1,10 @@
 """
-MVU Screen definitions for the TUI.
+MVU screen definitions for the TUI.
 
-Each screen class implements the MVU pattern:
-  - `model`: dataclass holding the screen's state
-  - `update(key)`: mutates state or returns routing command
-  - `view(cols, rows)`: returns list[str] frame representing output
-
-Now powered by the enterprise-grade component framework:
-  - Theme-aware rendering via semantic Styles
-  - Component composition (Header, DataTable, SplitPane, Modal, etc.)
-  - Animation support via Spinner and ProgressBar
-  - UX best practices enforced at every level
+Each screen implements:
+  - `model`: dataclass holding screen state
+  - `update(key)`: mutates state or returns a routing command
+  - `view(cols, rows)`: returns rendered frame lines
 """
 from __future__ import annotations
 import os, time
@@ -662,7 +656,7 @@ class ConversationDataView:
 
 
 # ==============================================================================
-# 4. RECOVERY WIZARD — Enterprise 6-Phase Pipeline
+# 4. RECOVERY WIZARD
 # ==============================================================================
 
 RECOVERY_PHASES = ["Backup", "Discovery", "Titles", "Injection", "JSON", "Done"]
@@ -764,7 +758,7 @@ class RecoveryWizardView:
 
 
 # ==============================================================================
-# 5. MERGE WIZARD — Enterprise Diff & Cherry-Pick
+# 5. MERGE WIZARD
 # ==============================================================================
 
 @dataclass
