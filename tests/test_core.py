@@ -7,6 +7,9 @@ Run with:  python -m unittest tests.test_core -v
 Coverage:
   - Protobuf round-trip encoding/decoding
   - Database lifecycle (create → write → read)
+  - Title resolution (preserved metadata, .pb fallbacks, task.md regression)
+  - Workspace inference from local file:/// URIs
+  - Recovery pipeline title behavior
   - Merge operations (additive, overwrite, selective)
   - Backup and restore lifecycle
   - Diagnostic scanner
@@ -558,6 +561,147 @@ class TestEdgeCases(unittest.TestCase):
             encoded = ProtobufEncoder.write_varint(v)
             decoded, _ = ProtobufEncoder.decode_varint(encoded, 0)
             self.assertEqual(decoded, v, f"Boundary value {v} failed round-trip")
+
+# ==============================================================================
+# TEST: TITLE RESOLUTION
+# ==============================================================================
+
+class TestResolveTitle(unittest.TestCase):
+    """Tests for resolve_title — preserved metadata then .pb fallbacks."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.convs_dir = os.path.join(self.tmpdir, "conversations")
+        os.makedirs(self.convs_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_uses_preserved_title_when_available(self):
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        title, source = ops.resolve_title(cid, {cid: "Preserved Title"}, self.convs_dir)
+        self.assertEqual(title, "Preserved Title")
+        self.assertEqual(source, "preserved")
+
+    def test_fallback_uses_pb_mtime_when_no_preserved_title(self):
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        pb_path = os.path.join(self.convs_dir, f"{cid}.pb")
+        with open(pb_path, "w", encoding="utf-8") as fh:
+            fh.write("conversation payload")
+        title, source = ops.resolve_title(cid, {}, self.convs_dir)
+        self.assertEqual(source, "fallback")
+        self.assertTrue(title.startswith("Conversation ("))
+        self.assertIn(cid[:8], title)
+
+    def test_generic_fallback_without_pb_file(self):
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        title, source = ops.resolve_title(cid, {}, self.convs_dir)
+        self.assertEqual(source, "fallback")
+        self.assertEqual(title, f"Conversation {cid[:8]}")
+
+    def test_ignores_task_md_in_brain_directory(self):
+        """Regression: task.md headings must not override preserved/fallback titles."""
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        brain_dir = os.path.join(self.tmpdir, "brain")
+        brain_conv = os.path.join(brain_dir, cid)
+        os.makedirs(brain_conv)
+        with open(os.path.join(brain_conv, "task.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Hallucinated Title From task.md\n")
+        pb_path = os.path.join(self.convs_dir, f"{cid}.pb")
+        with open(pb_path, "w", encoding="utf-8") as fh:
+            fh.write("conversation payload")
+        title, source = ops.resolve_title(cid, {}, self.convs_dir)
+        self.assertNotEqual(title, "Hallucinated Title From task.md")
+        self.assertEqual(source, "fallback")
+
+
+class TestWorkspaceInference(unittest.TestCase):
+    """Tests for workspace path inference from local Antigravity data."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.brain_dir = os.path.join(self.tmpdir, "brain")
+        os.makedirs(self.brain_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_infer_workspace_from_file_uri_in_markdown(self):
+        from src.core.artifacts import ArtifactParser
+
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        conv_dir = os.path.join(self.brain_dir, cid)
+        os.makedirs(conv_dir)
+        project = os.path.join(self.tmpdir, "myproject")
+        os.makedirs(project)
+        os.makedirs(os.path.join(project, ".git"))
+        uri_path = project.replace("\\", "/")
+        with open(os.path.join(conv_dir, "notes.md"), "w", encoding="utf-8") as fh:
+            fh.write(f"Edited file:///{uri_path}/src/main.py\n")
+        result = ArtifactParser.infer_workspace_from_brain(cid, self.brain_dir)
+        self.assertEqual(result, project)
+
+    def test_returns_none_when_conversation_dir_missing(self):
+        from src.core.artifacts import ArtifactParser
+
+        result = ArtifactParser.infer_workspace_from_brain(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", self.brain_dir,
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_no_file_uris_found(self):
+        from src.core.artifacts import ArtifactParser
+
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        os.makedirs(os.path.join(self.brain_dir, cid))
+        with open(os.path.join(self.brain_dir, cid, "notes.md"), "w", encoding="utf-8") as fh:
+            fh.write("# No file URIs here\n")
+        result = ArtifactParser.infer_workspace_from_brain(cid, self.brain_dir)
+        self.assertIsNone(result)
+
+
+class TestRecoveryPipelineTitles(unittest.TestCase):
+    """Integration tests for title resolution inside the recovery pipeline."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "state.vscdb")
+        self.convs_dir = os.path.join(self.tmpdir, "conversations")
+        self.brain_dir = os.path.join(self.tmpdir, "brain")
+        os.makedirs(self.convs_dir)
+        os.makedirs(self.brain_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_recovery_uses_preserved_titles_from_database(self):
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        _create_test_db(self.db_path, {cid: "Preserved In DB"})
+        with open(os.path.join(self.convs_dir, f"{cid}.pb"), "w", encoding="utf-8") as fh:
+            fh.write("payload")
+
+        result = ops.run_recovery_pipeline(
+            self.db_path, self.convs_dir, self.brain_dir,
+        )
+        self.assertTrue(result.success)
+        convs = scanner.list_conversations(self.db_path)
+        titles = {c.uuid: c.title for c in convs}
+        self.assertEqual(titles.get(cid), "Preserved In DB")
+
+    def test_recovery_uses_fallback_title_when_metadata_missing(self):
+        cid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+        ops.create_empty_db(self.db_path)
+        with open(os.path.join(self.convs_dir, f"{cid}.pb"), "w", encoding="utf-8") as fh:
+            fh.write("payload")
+
+        result = ops.run_recovery_pipeline(
+            self.db_path, self.convs_dir, self.brain_dir,
+        )
+        self.assertTrue(result.success)
+        payload = json.loads(ops.get_conversation_payload(self.db_path, cid))
+        self.assertTrue(payload["title"].startswith("Conversation ("))
+        self.assertIn(cid[:8], payload["title"])
+
 
 # ==============================================================================
 # TEST: STORAGE MANAGER

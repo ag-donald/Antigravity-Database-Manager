@@ -173,7 +173,7 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (52 tests)
+├── test_core.py                  ← Core logic tests (61 tests)
 └── test_tui.py                   ← TUI framework tests (113 tests)
 ```
 
