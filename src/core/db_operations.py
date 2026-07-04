@@ -445,8 +445,11 @@ def resolve_title(cid: str, existing_titles: dict[str, str],
         return existing_titles[cid], "preserved"
 
     pb_path = os.path.join(convs_dir, f"{cid}.pb")
-    if os.path.exists(pb_path):
-        mod_time = time.strftime("%b %d", time.localtime(os.path.getmtime(pb_path)))
+    db_path = os.path.join(convs_dir, f"{cid}.db")
+    target_path = pb_path if os.path.exists(pb_path) else db_path
+    
+    if os.path.exists(target_path):
+        mod_time = time.strftime("%b %d", time.localtime(os.path.getmtime(target_path)))
         return f"Conversation ({mod_time}) {cid[:8]}", "fallback"
 
     return f"Conversation {cid[:8]}", "fallback"
@@ -495,11 +498,23 @@ def run_recovery_pipeline(
     except OSError as exc:
         return RecoveryResult(success=False, error=f"Cannot read conversations dir: {exc}")
 
-    all_pbs = sorted(
-        [f[:-3] for f in raw_files if f.endswith(".pb")],
-        key=lambda f: os.path.getmtime(os.path.join(convs_dir, f"{f}.pb")),
-        reverse=True,
-    )
+    cid_set = set()
+    for f in raw_files:
+        if f.endswith(".pb") or f.endswith(".db"):
+            if not f.endswith("-shm") and not f.endswith("-wal"):
+                cid_set.add(f[:-3])
+
+    def _get_mtime(cid: str) -> float:
+        try:
+            pbp = os.path.join(convs_dir, f"{cid}.pb")
+            dbp = os.path.join(convs_dir, f"{cid}.db")
+            if os.path.exists(pbp): return os.path.getmtime(pbp)
+            if os.path.exists(dbp): return os.path.getmtime(dbp)
+        except OSError:
+            pass
+        return 0.0
+
+    all_pbs = sorted(list(cid_set), key=_get_mtime, reverse=True)
 
     if not all_pbs:
         return RecoveryResult(success=True, conversations_rebuilt=0)

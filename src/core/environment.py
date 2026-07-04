@@ -55,8 +55,17 @@ class EnvironmentResolver:
 
     @staticmethod
     def get_gemini_base_path() -> str:
-        """Returns the path to ~/.gemini/antigravity/."""
-        return os.path.join(os.path.expanduser("~"), ".gemini", "antigravity")
+        """Returns the path to ~/.gemini/antigravity/ or ~/.gemini/antigravity-ide/."""
+        home = os.path.expanduser("~")
+        ide_path = os.path.join(home, ".gemini", "antigravity-ide")
+        
+        # [Bugfix]: The newest IDE version moved data to 'antigravity-ide'.
+        # We must prioritize checking this new directory to find the user's active chats.
+        if os.path.isdir(ide_path):
+            return ide_path
+            
+        # Fallback to the legacy 'antigravity' folder for older IDE installations.
+        return os.path.join(home, ".gemini", "antigravity")
 
     @staticmethod
     def is_antigravity_running() -> bool:

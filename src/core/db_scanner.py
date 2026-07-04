@@ -336,6 +336,16 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
         results = []
         for uid, raw_inner in inner_blobs.items():
             title = titles.get(uid, "(Untitled)")
+            
+            j_entry = json_entries.get(uid)
+            json_synced = j_entry is not None
+            
+            # [Bugfix]: The newest IDE version often updates the real title dynamically
+            # and stores it in the JSON index rather than the Protobuf blob.
+            # If the JSON index has a title, we must prefer it to avoid showing (Untitled).
+            if json_synced and isinstance(j_entry, dict) and j_entry.get("title"):
+                title = j_entry["title"]
+                
             workspace_uri = ""
             has_timestamps = ProtobufEncoder.has_timestamp_fields(raw_inner)
             
