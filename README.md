@@ -604,5 +604,5 @@ You are free to copy, modify, distribute, and use this software for any purpose 
 ---
 
 <p align="center">
-  Made with ❤️ by <a href="https://agmercium.com">Donald R. Johnson</a> at <a href="https://agmercium.com">Agmercium</a>
+  Made with ❤️ by <a href="https://github.com/ag-donald/">Donald R. Johnson</a> at <a href="https://agmercium.com">Agmercium</a>
 </p>
