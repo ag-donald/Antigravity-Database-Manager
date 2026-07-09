@@ -8,15 +8,21 @@ All notable changes to this project are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version numbers adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Release dates use ISO 8601 (`YYYY-MM-DD`). File paths are relative to the repository root.
 
-## [Unreleased]
+## [8.7.0] - 2026-07-09
+
+### Added
+- **Multi-database support** (PR #3) — `get_antigravity_db_paths()` discovers active `Antigravity IDE` and deprecated `Antigravity` folders; `scan_all()` consolidates both; `--db-path` CLI override; headless `[11] Switch Active Database`; TUI **Set as Active Database** action. Review feedback addressed: active DB always at `snapshots[0]`, normalized path deduplication, preflight warnings on switch.
+- **Tests** — Added `TestResolveTitle`, `TestWorkspaceInference`, and `TestRecoveryPipelineTitles` (9 tests) covering title resolution, task.md regression guard, workspace inference, and recovery integration.
+
+### Fixed
+- **Latest IDE compatibility** (PR #5) — Newer Antigravity IDE builds moved data from `~/.gemini/antigravity/` to `~/.gemini/antigravity-ide/`, store conversations as SQLite `.db` files instead of Protobuf `.pb`, and keep dynamically updated chat titles in the JSON session index rather than the Protobuf blob. `get_gemini_base_path()` now prefers the new directory with a legacy fallback; the recovery pipeline discovers both `.pb` and `.db` conversations (ignoring `.db-shm`/`.db-wal` sidecars) and preserves real file timestamps for `.db`-only conversations; `list_conversations()` prefers titles from the JSON index, fixing the `(Untitled)` display bug (`src/core/environment.py`, `src/core/db_operations.py`, `src/core/db_scanner.py`).
 
 ### Changed
 - **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (176 total). Removed inaccurate brain-artifact file references from user-facing docs.
+- **Documentation (latest IDE format)** — Updated all Markdown docs for the new `~/.gemini/antigravity-ide/` data directory and SQLite `.db` conversation format: README recovery/pipeline/FAQ sections, `SECURITY.md` scope, `BUGS_RESEARCH.md` fix descriptions, and a July 2026 update note in `BUGREPORT_Google_Antigravity_ChatSessionStore.md`. Restored TUI screenshots to the README, corrected the headless menu operation count (eleven), added `widgets.py` to project-structure listings, and corrected Bug #8's fix description to match implemented behavior.
 - **`src/core/artifacts.py`** — Removed hallucinated title-extraction paths (`task.md`, `implementation_plan.md`, `walkthrough.md`). Module now only infers workspace paths from local `file:///` URIs.
 - **`resolve_title`** — Titles resolve from preserved database metadata, then `.pb` timestamp fallbacks.
 - **Entry point / TUI** — Trimmed marketing language from module docstrings.
-- **Tests** — Added `TestResolveTitle`, `TestWorkspaceInference`, and `TestRecoveryPipelineTitles` (9 tests) covering title resolution, task.md regression guard, workspace inference, and recovery integration.
-- **Multi-database support** (PR #3) — `get_antigravity_db_paths()` discovers active `Antigravity IDE` and deprecated `Antigravity` folders; `scan_all()` consolidates both; `--db-path` CLI override; headless `[11] Switch Active Database`; TUI **Set as Active Database** action. Review feedback addressed: active DB always at `snapshots[0]`, normalized path deduplication, preflight warnings on switch.
 
 ## [8.6.1] - 2026-04-07
 

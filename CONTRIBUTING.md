@@ -37,8 +37,8 @@ Open an issue with the `enhancement` label describing:
    ```
 5. Run the full test suite:
    ```bash
-    python -m unittest discover -s tests -v
-    ```
+   python -m unittest discover -s tests -v
+   ```
 6. Test on your platform (Windows, macOS, or Linux)
 7. Commit your changes: `git commit -m "Add: description of change"`
 8. Push to your fork: `git push origin feature/your-feature`
@@ -78,6 +78,7 @@ src/
 │   ├── components.py             ← Reusable UI components
 │   ├── animation.py              ← Easing, animated values, transitions
 │   ├── engine.py                 ← Double-buffered terminal I/O
+│   ├── widgets.py                ← Composite panels (health report, diagnostics, …)
 │   ├── app.py                    ← Application event loop
 │   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
 └── ui_headless/                  ← CLI parser and interactive menus

@@ -8,7 +8,7 @@
 
 This unofficial community Database Management Hub operates **entirely offline** on local files. It:
 - Makes **no network requests** of any kind
-- Reads conversation `.pb` files and other local data under `~/.gemini/antigravity/` (read-only)
+- Reads conversation files (`.pb` and `.db`) and other local data under `~/.gemini/antigravity-ide/` or the legacy `~/.gemini/antigravity/` (read-only)
 - Writes only to the IDE's `state.vscdb` SQLite database and `storage.json` (when using storage subcommands)
 - Creates timestamped backups before any modifications (`{db}.agmercium_recovery_{timestamp}_{reason}`)
 
@@ -31,7 +31,7 @@ If you discover a security vulnerability in this tool, please report it responsi
 This tool intentionally modifies the Antigravity IDE's SQLite database. While automatic backups are created, users should be aware that:
 
 - Running the tool while the IDE is open may result in the IDE overwriting the patched database
-- Corrupt `.pb` files could theoretically produce malformed index entries (the tool handles this gracefully)
+- Corrupt conversation files could theoretically produce malformed index entries (the tool handles this gracefully)
 - The tool requires read/write access to the database file, which is a normal user-level permission
 
 ## Dependencies
