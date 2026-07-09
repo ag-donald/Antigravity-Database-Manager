@@ -7,7 +7,7 @@ from __future__ import annotations
 # ==============================================================================
 # VERSION & IDENTITY
 # ==============================================================================
-VERSION = "8.6.1"
+VERSION = "8.7.0"
 APP_NAME = "Agmercium Antigravity IDE DB Manager"
 TOOL_NAME = "Agmercium Antigravity IDE Recovery Tool"
 AGMERCIUM_URL = "https://www.agmercium.com"
