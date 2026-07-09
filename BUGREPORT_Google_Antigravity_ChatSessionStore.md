@@ -18,6 +18,8 @@ The Antigravity IDE silently resets its two internal conversation indices — `c
 
 This is **not data loss** — the raw conversation data is never affected. It is an **index corruption** bug where the IDE's UI layer loses its mapping between conversation UUIDs and sidebar entries.
 
+> **Update (July 2026):** Newer IDE builds relocate user data from `~/.gemini/antigravity/` to `~/.gemini/antigravity-ide/` and store conversations as SQLite `.db` files instead of Protobuf `.pb` files. The failure mode described below is unchanged; the recovery tool supports both directory layouts and both file formats.
+
 ---
 
 ## Reproduction Steps
@@ -34,7 +36,8 @@ This is **not data loss** — the raw conversation data is never affected. It is
 ### Verification That Data Is Intact
 
 ```bash
-# Count the .pb files — these are the raw conversation data
+# Count the conversation files — these are the raw conversation data
+# (use ~/.gemini/antigravity-ide/ on newer IDE builds)
 ls ~/.gemini/antigravity/conversations/ | wc -l
 # Example output: 100 (all files present)
 
@@ -145,15 +148,15 @@ message TrajectoryPayload {
 
 ## Workaround
 
-We have developed and released an open-source recovery tool that rebuilds both indices from the intact `.pb` files:
+We have developed and released an open-source recovery tool that rebuilds both indices from the intact conversation files:
 
 **Repository:** [github.com/ag-donald/Antigravity-Database-Manager](https://github.com/ag-donald/Antigravity-Database-Manager)
 
 ### How It Works
 
-1. Discovers all `.pb` conversation files in `~/.gemini/antigravity/conversations/`.
+1. Discovers all conversation files (`.pb` and `.db`) in the IDE's conversations directory (`~/.gemini/antigravity-ide/` or the legacy `~/.gemini/antigravity/`).
 2. Reads any surviving title and workspace metadata still present in the database.
-3. Resolves titles from preserved metadata when available; otherwise generates timestamp-based titles from `.pb` file times.
+3. Resolves titles from preserved metadata when available; otherwise generates timestamp-based titles from conversation file times.
 4. Synthesizes Protobuf entries with byte-accurate Wire Type 2 nested schemas (Fields 9 and 17).
 5. Merges new entries into both indices (non-destructive — preserves cloud-only conversations).
 6. Creates automatic timestamped backups before any writes (`{db}.agmercium_recovery_{timestamp}_{reason}`).

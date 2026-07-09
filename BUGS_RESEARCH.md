@@ -17,9 +17,9 @@ The most commonly reported bug. Both internal indices (`ChatSessionStore.index` 
 | Detail | Description |
 |--------|-------------|
 | **Trigger** | Updating the IDE to a new version (v1.18.x → v1.19.x, v1.20.x, etc.) |
-| **Symptoms** | All conversations vanish from the sidebar immediately after update. `.pb` files remain on disk untouched. |
+| **Symptoms** | All conversations vanish from the sidebar immediately after update. Conversation files (`.pb`, or `.db` on the newest IDE) remain on disk untouched. |
 | **Root Cause** | The IDE's update migration pipeline does not preserve the `state.vscdb` key `chat.ChatSessionStore.index` — it re-initializes to `{"version":1,"entries":{}}`. The Protobuf `trajectorySummaries` blob is also zeroed. |
-| **Our Fix** | Full recovery pipeline scans `.pb` files, resolves titles from preserved database metadata or `.pb` timestamps, and rebuilds both indices byte-accurately. |
+| **Our Fix** | Full recovery pipeline scans conversation files (`.pb` and `.db`), resolves titles from preserved database metadata or file timestamps, and rebuilds both indices byte-accurately. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -40,7 +40,7 @@ The IDE performs a non-atomic flush of its two indices during shutdown. If the p
 | **Trigger** | Power outage, SIGKILL, force-quit, OS crash, or any unclean IDE termination |
 | **Symptoms** | Some or all conversations disappear. JSON index may be partially written (truncated JSON). Protobuf blob may be empty or contain orphaned entries. |
 | **Root Cause** | The IDE writes `ChatSessionStore.index` and `trajectorySummaries` as separate, non-transactional SQLite updates. If the process dies between writes, one or both can be in an inconsistent state. |
-| **Our Fix** | Recovery pipeline rebuilds both indices atomically from the source-of-truth `.pb` files. Diagnostic engine detects and repairs partial writes. |
+| **Our Fix** | Recovery pipeline rebuilds both indices atomically from the source-of-truth conversation files on disk. Diagnostic engine detects and repairs partial writes. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -76,7 +76,7 @@ Conversations created during SSH remote development sessions behave differently 
 | **Trigger** | Starting/stopping SSH remote sessions, switching between local and remote workspaces, remote server reboot |
 | **Symptoms** | Conversations created in SSH sessions are invisible in local mode, and vice versa. Some conversations have workspace URIs prefixed with `vscode-remote://` which are unavailable locally. |
 | **Root Cause** | The IDE stores remote workspace URIs as `vscode-remote://ssh-remote+host/path/to/project` which may not resolve when working locally. The `state.vscdb` may also be on the remote machine, not synced to local. |
-| **Our Fix** | Full scan detects all `.pb` files regardless of workspace binding. `scan` subcommand reports workspace URI mismatches. `workspace migrate` can rebind remote URIs to local equivalents. |
+| **Our Fix** | Full scan detects all conversation files regardless of workspace binding. `scan` subcommand reports workspace URI mismatches. `workspace migrate` can rebind remote URIs to local equivalents. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -94,7 +94,7 @@ The Agent Manager chat window "self-deletes" conversations when it encounters a 
 | **Trigger** | Agent Manager encounters a Protobuf parsing error, schema mismatch, or corrupted field during conversation load |
 | **Symptoms** | Conversation tile disappears from the Agent Manager UI. Agent state files remain on disk. No user-facing error message — silent deletion. |
 | **Root Cause** | The IDE's Protobuf parser silently discards entries it cannot decode rather than displaying an error. If a single field is malformed (e.g., Field 15 with invalid wire type), the entire entry is dropped from the rendered list. |
-| **Our Fix** | Diagnostic engine performs byte-level Protobuf validation to detect ghost bytes, invalid wire types, and field ordering issues. Repair engine autonomously fixes malformed entries. Recovery pipeline re-creates clean Protobuf entries from the `.pb` source data. |
+| **Our Fix** | Diagnostic engine performs byte-level Protobuf validation to detect ghost bytes, invalid wire types, and field ordering issues. Repair engine autonomously fixes malformed entries. Recovery pipeline re-creates clean Protobuf entries from the on-disk conversation data. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -137,7 +137,7 @@ Extended, deep-context conversations (multi-day agentic sessions with hundreds o
 | **Trigger** | Conversations with 100+ agent steps, large tool outputs, or extended multi-day sessions |
 | **Symptoms** | Conversation loads but shows only the first N messages, or fails to load entirely with a blank chat window. The `.pb` file is large (10+ MB) and intact. |
 | **Root Cause** | Backend UI rendering cannot process extremely large Protobuf payloads. The sidebar's trajectory summary may also have truncated or zero step counts, causing the IDE to skip the entry. |
-| **Our Fix** | Recovery injects accurate step counts from `.pb` file analysis. Health check reports conversation sizes. Diagnostic engine flags entries with suspicious zero-step counts. |
+| **Our Fix** | Recovery rebuilds the sidebar index entries so oversized conversations reappear in the list. The diagnostic engine flags entries with empty or malformed payloads. Rendering limits inside the IDE itself are outside this tool's control. |
 
 | Community Reports | Author | Source |
 |-------------------|--------|--------|
@@ -167,7 +167,7 @@ The IDE maintains three parallel data structures — `storage.json`, the JSON in
 | **Trigger** | Partial writes, concurrent access, IDE crashes mid-operation, or manual database editing |
 | **Symptoms** | Conversations appear in the sidebar but load as blank. Or conversations have titles in the sidebar but no workspace binding. Or `storage.json` references conversations that don't exist in the Protobuf index. |
 | **Root Cause** | The three data stores are updated independently without a single transaction boundary. A crash between any two writes leaves them out of sync. |
-| **Our Fix** | `storage inspect` subcommand reports the state of `storage.json`. Health check cross-validates all three data stores. Recovery pipeline writes all indices atomically from a single source of truth (the `.pb` files). |
+| **Our Fix** | `storage inspect` subcommand reports the state of `storage.json`. Health check cross-validates the JSON and Protobuf indices. Recovery pipeline writes both indices in a single transaction from a single source of truth (the conversation files on disk). |
 
 ---
 
@@ -207,4 +207,4 @@ All 11 bugs stem from the same fundamental architectural flaw: the IDE's failure
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — Loses UUID-to-conversation mappings
 3. **`storage.json`** — Workspace binding metadata falls out of sync
 
-The raw `.pb` data files at `~/.gemini/antigravity/conversations/` are **never modified** by this tool. Recovery is possible because conversation payloads survive on disk — which is exactly what this Database Manager rebuilds from.
+The raw conversation files (`.pb` and `.db`) under `~/.gemini/antigravity-ide/conversations/` (or the legacy `~/.gemini/antigravity/conversations/`) are **never modified** by this tool. Recovery is possible because conversation payloads survive on disk — which is exactly what this Database Manager rebuilds from.

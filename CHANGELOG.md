@@ -15,6 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ### Changed
 - **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (176 total). Removed inaccurate brain-artifact file references from user-facing docs.
+- **Documentation (latest IDE format)** — Updated all Markdown docs for the new `~/.gemini/antigravity-ide/` data directory and SQLite `.db` conversation format: README recovery/pipeline/FAQ sections, `SECURITY.md` scope, `BUGS_RESEARCH.md` fix descriptions, and a July 2026 update note in `BUGREPORT_Google_Antigravity_ChatSessionStore.md`. Restored TUI screenshots to the README, corrected the headless menu operation count (eleven), added `widgets.py` to project-structure listings, and corrected Bug #8's fix description to match implemented behavior.
 - **`src/core/artifacts.py`** — Removed hallucinated title-extraction paths (`task.md`, `implementation_plan.md`, `walkthrough.md`). Module now only infers workspace paths from local `file:///` URIs.
 - **`resolve_title`** — Titles resolve from preserved database metadata, then `.pb` timestamp fallbacks.
 - **Entry point / TUI** — Trimmed marketing language from module docstrings.
