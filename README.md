@@ -27,6 +27,10 @@
   <a href="#license">License</a>
 </p>
 
+<p align="center">
+  <img src="docs/HomeView.png" alt="Full-screen TUI home dashboard showing databases and health report" width="720">
+</p>
+
 ---
 
 ## The Bug
@@ -38,9 +42,9 @@ Google Antigravity IDE (a heavily modified VS Code fork for agent-first AI devel
 - Power outages or unclean shutdowns
 - Certain workspace or session transitions
 
-The underlying `.pb` conversation data files remain **intact** on disk at `~/.gemini/antigravity/conversations/`, but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — so the sidebar shows zero history.
+The underlying conversation data files (`.pb` in older IDE versions, SQLite `.db` in the newest) remain **intact** on disk under `~/.gemini/antigravity-ide/conversations/` (or `~/.gemini/antigravity/conversations/` on older installations), but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — so the sidebar shows zero history.
 
-**This tool rebuilds those internal indices from your intact `.pb` files, restoring conversation history in the IDE.**
+**This tool rebuilds those internal indices from your intact conversation files, restoring conversation history in the IDE.**
 
 ### Community Bug Reports
 
@@ -70,7 +74,7 @@ These bugs stem from the IDE failing to atomically flush its internal indices du
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — loses UUID-to-conversation mappings
 3. **`storage.json`** — workspace binding metadata falls out of sync
 
-The raw `.pb` files under `~/.gemini/antigravity/conversations/` are **never modified** by this tool. Recovery is possible because the conversation payloads survive on disk.
+The raw conversation files (`.pb` and `.db`) under `~/.gemini/antigravity-ide/conversations/` (or the legacy `~/.gemini/antigravity/conversations/`) are **never modified** by this tool. Recovery is possible because the conversation payloads survive on disk.
 
 ---
 
@@ -126,13 +130,13 @@ The Antigravity IDE stores conversation history in two parallel indices inside i
 | **Trajectory Summaries** | Base64-encoded Protobuf | `antigravityUnifiedStateSync.trajectorySummaries` |
 | **Session Store** | JSON | `chat.ChatSessionStore.index` |
 
-When the bug occurs, one or both indices lose their entries while the raw `.pb` conversation files remain on disk.
+When the bug occurs, one or both indices lose their entries while the raw conversation files remain on disk.
 
 The recovery pipeline:
 
-1. **Discovers** all local `.pb` files in `~/.gemini/antigravity/conversations/`
+1. **Discovers** all local conversation files (`.pb` and `.db`) in the IDE's conversations directory, ignoring SQLite sidecar files (`.db-shm`, `.db-wal`)
 2. **Reads** any surviving title and workspace metadata still present in the database
-3. **Resolves titles** from preserved database metadata when available; otherwise generates timestamp-based titles from `.pb` file times (for example, `Conversation (Mar 19) a1b2c3d4`)
+3. **Resolves titles** from preserved database metadata when available; otherwise generates timestamp-based titles from conversation file times (for example, `Conversation (Mar 19) a1b2c3d4`)
 4. **Assigns workspaces** from existing Protobuf hints, with a dominant-workspace fallback for unmapped conversations
 5. **Synthesizes** Protobuf entries with byte-accurate Wire Type 2 nested schemas (Fields 9 and 17)
 6. **Backs up** the database before any writes (automatic, timestamped copy)
@@ -166,6 +170,7 @@ src/
 │   ├── components.py             ← Reusable UI components
 │   ├── animation.py              ← Easing, animated values, transitions
 │   ├── engine.py                 ← Double-buffered terminal I/O
+│   ├── widgets.py                ← Composite panels (health report, diagnostics, …)
 │   ├── app.py                    ← Application event loop
 │   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
 └── ui_headless/                  ← CLI parser and interactive menus
@@ -181,7 +186,7 @@ tests/
 
 | Phase | Description |
 |-------|-------------|
-| **Discovery** | Scans `~/.gemini/antigravity/conversations/` for `.pb` files and reads surviving database metadata |
+| **Discovery** | Scans the conversations directory for `.pb` and `.db` files and reads surviving database metadata |
 | **Build** | Resolves titles and workspace bindings for each conversation |
 | **Backup** | Creates a timestamped copy of `state.vscdb` before any writes |
 | **Injection** | Rebuilds the Protobuf `trajectorySummaries` blob and synchronizes `ChatSessionStore.index` in a single SQLite transaction |
@@ -200,6 +205,8 @@ The tool auto-detects both the **active** and **deprecated** Antigravity IDE dat
 | **Linux** | `~/.config/Antigravity IDE/User/globalStorage/state.vscdb` | `~/.config/Antigravity/User/globalStorage/state.vscdb` |
 
 The resolver prefers whichever path exists on disk, defaulting to the active `Antigravity IDE` folder.
+
+Raw conversation data is resolved the same way on all platforms: the modern `~/.gemini/antigravity-ide/` directory is preferred when it exists, with the legacy `~/.gemini/antigravity/` directory as a fallback. Both the older Protobuf (`.pb`) and the newest SQLite (`.db`) conversation formats are supported.
 
 - **Python:** 3.10+
 - **Dependencies:** None (standard library only)
@@ -257,6 +264,10 @@ Split pane: databases (current and backups) on the left, health report on the ri
 
 Browse, search, rename, and delete conversations. Split pane: list on the left, details (UUID, workspace, timestamps, sync status) on the right.
 
+<p align="center">
+  <img src="docs/ConversationView.png" alt="Conversation Browser with list and details panes" width="720">
+</p>
+
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Navigate between conversations |
@@ -280,11 +291,15 @@ View the raw JSON payload of a conversation.
 
 Guided recovery with a progress indicator. Press `Enter` to start.
 
+<p align="center">
+  <img src="docs/RecoveryView.png" alt="Recovery Wizard showing pipeline progress" width="720">
+</p>
+
 | Step | Description |
 |------|-------------|
 | **Backup** | Creates a safety backup of the current database |
-| **Discovery** | Scans `~/.gemini/antigravity/conversations/` for `.pb` files |
-| **Titles** | Resolves titles from preserved metadata or `.pb` timestamps |
+| **Discovery** | Scans the conversations directory for `.pb` and `.db` files |
+| **Titles** | Resolves titles from preserved metadata or conversation file timestamps |
 | **Injection** | Rebuilds Protobuf entries in `state.vscdb` |
 | **JSON** | Synchronizes `ChatSessionStore.index` |
 | **Done** | Displays summary statistics |
@@ -328,7 +343,7 @@ For environments without TUI support:
 python antigravity_database_manager.py --headless
 ```
 
-Presents a numbered menu with ten operations:
+Presents a numbered menu with eleven operations:
 
 ```
   AGMERCIUM DB MANAGER — Main Menu
@@ -497,7 +512,7 @@ python -m unittest discover -s tests -v
 - **Automatic backup:** A timestamped copy of your database is created before any writes.
 - **Non-destructive merge:** Existing index entries are preserved by default; additive merge only injects missing entries.
 - **Automatic rollback:** If a database error occurs during recovery, the pre-write backup is restored.
-- **Read-only on `.pb` files:** Conversation payload files are never modified.
+- **Read-only on conversation files:** `.pb` and `.db` payload files are never modified.
 - **No network access:** The tool operates entirely offline.
 
 ---
@@ -532,7 +547,7 @@ No. Recovery and additive merge only add or update missing entries. They do not 
 
 ### What if I have conversations from multiple projects?
 
-Run recovery once. The pipeline scans **all** `.pb` files under `~/.gemini/antigravity/conversations/` and rebuilds indices for every conversation it finds, assigning workspaces from preserved metadata or dominant-workspace fallback.
+Run recovery once. The pipeline scans **all** conversation files (`.pb` and `.db`) in the IDE's conversations directory and rebuilds indices for every conversation it finds, assigning workspaces from preserved metadata or dominant-workspace fallback.
 
 ### Can I run this while the IDE is open?
 
@@ -544,7 +559,7 @@ A backup is created before any writes. If injection fails, the tool attempts aut
 
 ### Will conversation titles be correct?
 
-Titles are taken from **preserved database metadata** when any fragments remain after the index wipe. When no title survives, the tool generates a readable fallback from the `.pb` file's modification time (for example, `Conversation (Mar 19) a1b2c3d4`). You can rename conversations afterward via the TUI or `conversations rename`.
+Titles are taken from **preserved database metadata** when any fragments remain after the index wipe — including titles the newest IDE stores in the JSON session index rather than the Protobuf blob. When no title survives, the tool generates a readable fallback from the conversation file's modification time (for example, `Conversation (Mar 19) a1b2c3d4`). You can rename conversations afterward via the TUI or `conversations rename`.
 
 ### Where is the Protobuf schema documented?
 
