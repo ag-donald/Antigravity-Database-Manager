@@ -10,6 +10,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed
+- **Latest IDE compatibility** (PR #5) — Newer Antigravity IDE builds moved data from `~/.gemini/antigravity/` to `~/.gemini/antigravity-ide/`, store conversations as SQLite `.db` files instead of Protobuf `.pb`, and keep dynamically updated chat titles in the JSON session index rather than the Protobuf blob. `get_gemini_base_path()` now prefers the new directory with a legacy fallback; the recovery pipeline discovers both `.pb` and `.db` conversations (ignoring `.db-shm`/`.db-wal` sidecars) and preserves real file timestamps for `.db`-only conversations; `list_conversations()` prefers titles from the JSON index, fixing the `(Untitled)` display bug (`src/core/environment.py`, `src/core/db_operations.py`, `src/core/db_scanner.py`).
+
 ### Changed
 - **Documentation** — Aligned `README.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `BUGREPORT_Google_Antigravity_ChatSessionStore.md` with actual recovery behavior: titles from preserved database metadata or `.pb` timestamps; backup naming pattern; current project structure and test counts (176 total). Removed inaccurate brain-artifact file references from user-facing docs.
 - **`src/core/artifacts.py`** — Removed hallucinated title-extraction paths (`task.md`, `implementation_plan.md`, `walkthrough.md`). Module now only infers workspace paths from local `file:///` URIs.
