@@ -445,8 +445,11 @@ def resolve_title(cid: str, existing_titles: dict[str, str],
         return existing_titles[cid], "preserved"
 
     pb_path = os.path.join(convs_dir, f"{cid}.pb")
-    if os.path.exists(pb_path):
-        mod_time = time.strftime("%b %d", time.localtime(os.path.getmtime(pb_path)))
+    db_path = os.path.join(convs_dir, f"{cid}.db")
+    target_path = pb_path if os.path.exists(pb_path) else db_path
+
+    if os.path.exists(target_path):
+        mod_time = time.strftime("%b %d", time.localtime(os.path.getmtime(target_path)))
         return f"Conversation ({mod_time}) {cid[:8]}", "fallback"
 
     return f"Conversation {cid[:8]}", "fallback"
@@ -495,11 +498,21 @@ def run_recovery_pipeline(
     except OSError as exc:
         return RecoveryResult(success=False, error=f"Cannot read conversations dir: {exc}")
 
-    all_pbs = sorted(
-        [f[:-3] for f in raw_files if f.endswith(".pb")],
-        key=lambda f: os.path.getmtime(os.path.join(convs_dir, f"{f}.pb")),
-        reverse=True,
-    )
+    # SQLite sidecar files (.db-shm / .db-wal) don't match these suffixes,
+    # so no extra filtering is needed.
+    cid_set = {f[:-3] for f in raw_files if f.endswith(".pb") or f.endswith(".db")}
+
+    def _get_mtime(cid: str) -> float:
+        for ext in (".pb", ".db"):
+            path = os.path.join(convs_dir, f"{cid}{ext}")
+            try:
+                if os.path.exists(path):
+                    return os.path.getmtime(path)
+            except OSError:
+                pass
+        return 0.0
+
+    all_pbs = sorted(cid_set, key=_get_mtime, reverse=True)
 
     if not all_pbs:
         return RecoveryResult(success=True, conversations_rebuilt=0)
@@ -590,10 +603,19 @@ def run_recovery_pipeline(
 
         for cid, title, source, inner_data, has_ws in resolved:
             ws_map = ws_assignments.get(cid)
-            pb_path = os.path.join(convs_dir, f"{cid}.pb")
 
-            pb_mtime = int(os.path.getmtime(pb_path)) if os.path.exists(pb_path) else int(time.time())
-            pb_ctime = int(os.path.getctime(pb_path)) if os.path.exists(pb_path) else int(time.time())
+            # Prefer the .pb file for timestamps, but fall back to the .db file
+            # so .db-only conversations keep their real history timestamps.
+            src_path = os.path.join(convs_dir, f"{cid}.pb")
+            if not os.path.exists(src_path):
+                src_path = os.path.join(convs_dir, f"{cid}.db")
+
+            if os.path.exists(src_path):
+                pb_mtime = int(os.path.getmtime(src_path))
+                pb_ctime = int(os.path.getctime(src_path))
+            else:
+                pb_mtime = int(time.time())
+                pb_ctime = int(time.time())
 
             entry = ProtobufEncoder.build_trajectory_entry(
                 cid, title, ws_map, pb_ctime, pb_mtime, existing_inner_data=inner_data
