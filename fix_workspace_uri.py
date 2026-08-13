@@ -129,10 +129,6 @@ def patch_workbench_js(ide_dir: Path) -> bool:
 
     content = js_path.read_text(encoding="utf-8")
 
-    if PATCH_MARKER in content:
-        print("  Patch already applied — skipping.")
-        return True
-
     NORM = "_aUF"  # short name for minified context
     NORM_DEF = (
         f'var {NORM}=function(s){{return typeof s==="string"'
@@ -141,37 +137,61 @@ def patch_workbench_js(ide_dir: Path) -> bool:
 
     patches_applied = 0
 
-    # PATCH 1: The dialog comparison — this is the line that decides
-    # whether to show "Select where to open" or open directly.
-    old1 = 'F[0]===u.workspaceUris[0]){o(A.selectedCascadeId)'
-    new1 = f'{NORM}(F[0])==={NORM}(u.workspaceUris[0])' + '){o(A.selectedCascadeId)'
-    if old1 in content:
+    # PATCH 1: The dialog comparison — decides whether to show "Select where to open"
+    p1_pattern = r"F\[0\]===([a-zA-Z0-9_]+)\.workspaceUris\[0\]"
+    m1 = re.search(p1_pattern, content)
+    if m1:
+        old1 = m1.group(0)
+        var_name = m1.group(1)
+        new1 = f"{NORM}(F[0])==={NORM}({var_name}.workspaceUris[0])"
         content = content.replace(old1, new1, 1)
         patches_applied += 1
-        print("  PATCH 1/3: Dialog comparison — applied")
+        print(f"  PATCH 1/3: Dialog comparison — applied ({old1} -> {new1})")
+    elif f"{NORM}(F[0])" in content:
+        patches_applied += 1
+        print("  PATCH 1/3: Dialog comparison — already applied")
     else:
         print("  PATCH 1/3: Dialog comparison — not found (may differ in this version)")
 
-    # PATCH 2: LEo() — URI prefix-match helper used by workspace filtering.
-    old2 = 'function LEo(t,e){return t===e||t.startsWith(e+"/")}'
-    new2 = (
-        f'function LEo(t,e){{var a={NORM}(t),b={NORM}(e);'
-        f'return a===b||a.startsWith(b+"/")}}'
-    )
-    if old2 in content:
+    # PATCH 2: Workspace filtering in sidebar / prefix-match helper
+    p2_pattern1 = r"n\.workspaces\.map\(r=>r\.workspaceFolderAbsoluteUri\)\.some\(r=>e\.includes\(r\)\)"
+    p2_pattern2 = r"function LEo\(t,e\)\{return t===e\|\|t\.startsWith\(e\+\"\/\"\)\}"
+    m2_1 = re.search(p2_pattern1, content)
+    m2_2 = re.search(p2_pattern2, content)
+
+    if m2_1:
+        old2 = m2_1.group(0)
+        new2 = f"n.workspaces.map(r=>r.workspaceFolderAbsoluteUri).some(r=>e.some(w=>{NORM}(w)==={NORM}(r)))"
+        content = content.replace(old2, new2, 1)
+        patches_applied += 1
+        print("  PATCH 2/3: Workspace filter — applied")
+    elif m2_2:
+        old2 = m2_2.group(0)
+        new2 = (
+            f"function LEo(t,e){{var a={NORM}(t),b={NORM}(e);"
+            f"return a===b||a.startsWith(b+\"/\")}}"
+        )
         content = content.replace(old2, new2, 1)
         patches_applied += 1
         print("  PATCH 2/3: LEo function — applied")
+    elif f"{NORM}(w)==={NORM}(r)" in content:
+        patches_applied += 1
+        print("  PATCH 2/3: Workspace filter — already applied")
     else:
         print("  PATCH 2/3: LEo function — not found (may differ in this version)")
 
     # PATCH 3: State sync comparison in the unified-state transformer.
-    old3 = 'l.workspaceFolderAbsoluteUri===n.toString()'
-    new3 = f'{NORM}(l.workspaceFolderAbsoluteUri)==={NORM}(n.toString())'
-    if old3 in content:
+    p3_pattern = r"l\.workspaceFolderAbsoluteUri===n\.toString\(\)"
+    m3 = re.search(p3_pattern, content)
+    if m3:
+        old3 = m3.group(0)
+        new3 = f"{NORM}(l.workspaceFolderAbsoluteUri)==={NORM}(n.toString())"
         content = content.replace(old3, new3, 1)
         patches_applied += 1
         print("  PATCH 3/3: State sync comparison — applied")
+    elif f"{NORM}(l.workspaceFolderAbsoluteUri)" in content:
+        patches_applied += 1
+        print("  PATCH 3/3: State sync comparison — already applied")
     else:
         print("  PATCH 3/3: State sync comparison — not found (may differ in this version)")
 
@@ -180,8 +200,9 @@ def patch_workbench_js(ide_dir: Path) -> bool:
         print("  The minified function/variable names change with each build.")
         return False
 
-    # Prepend the normalizer function definition (must come before usage)
-    content = f";{NORM_DEF}{PATCH_MARKER}\n" + content
+    # Prepend the normalizer function definition (must come before usage) if not present
+    if PATCH_MARKER not in content:
+        content = f";{NORM_DEF}{PATCH_MARKER}\n" + content
 
     js_path.write_text(content, encoding="utf-8")
     print(f"  {patches_applied}/3 patches applied")
@@ -313,7 +334,7 @@ def normalize_database_uris(db_path: str) -> int:
     conn.commit()
     conn.close()
 
-    print(f"  Fixed {fixed} entries (raw colon → percent-encoded)")
+    print(f"  Fixed {fixed} entries (raw colon -> percent-encoded)")
     return fixed
 
 
