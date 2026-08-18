@@ -150,6 +150,7 @@ Protobuf field layout is documented in [docs/schema.proto](docs/schema.proto).
 ```
 antigravity_database_manager.py   ← Entry point
 build_release.py                  ← Builds the cross-platform .pyz zipapp
+fix_workspace_uri.py              ← Thin wrapper for the fix-uris command (Bug #12)
 src/
 ├── core/                         ← Domain logic, models, database operations
 │   ├── constants.py
@@ -161,6 +162,7 @@ src/
 │   ├── db_operations.py
 │   ├── diagnostic.py
 │   ├── storage_manager.py
+│   ├── uri_fix.py
 │   └── lifecycle.py
 ├── ui_tui/                       ← Full-screen terminal UI
 │   ├── capabilities.py           ← Terminal capability detection
@@ -178,7 +180,7 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (63 tests)
+├── test_core.py                  ← Core logic tests (94 tests)
 └── test_tui.py                   ← TUI framework tests (113 tests)
 ```
 
@@ -413,6 +415,17 @@ python antigravity_database_manager.py repair --target path.vscdb
 ```
 
 Auto-fixes corruptions found by `diagnose`. Creates a backup first.
+
+#### `fix-uris` — Workspace URI Encoding Fix (Bug #12)
+
+```bash
+python antigravity_database_manager.py fix-uris             # patch the IDE bundle
+python antigravity_database_manager.py fix-uris --dry-run   # preview without writing
+python antigravity_database_manager.py fix-uris --db        # also normalize state.vscdb
+python antigravity_database_manager.py fix-uris --db --no-js --ide-path "C:/path/to/Antigravity IDE"
+```
+
+Fixes the Windows "Select where to open the conversation" dialog (Bug #12 in [BUGS_RESEARCH.md](BUGS_RESEARCH.md)): the IDE backend stores workspace URIs with a raw drive-letter colon while the frontend compares against the percent-encoded form. The command patches the three failing comparisons in `workbench.desktop.main.js` to normalize encoding (and drive-letter case) before comparing, then refreshes the bundle checksum in `product.json`. The IDE installation is auto-detected on Windows, macOS, and Linux; the bug itself only manifests with Windows drive-letter URIs. Re-run after every IDE update — an already-patched bundle is detected and left untouched. `--db` additionally canonicalizes URIs already stored in `state.vscdb` with a surgical rewrite that touches only URI fields, preserves everything else byte-for-byte, and creates a discoverable backup first. Refuses to run while the IDE is open (override with `--force`). `python fix_workspace_uri.py` is an equivalent standalone wrapper.
 
 #### `merge` — Database Merge
 

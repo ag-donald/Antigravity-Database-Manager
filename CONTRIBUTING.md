@@ -58,6 +58,7 @@ Open an issue with the `enhancement` label describing:
 ```
 antigravity_database_manager.py   ← Entry point
 build_release.py                  ← Builds the cross-platform .pyz zipapp
+fix_workspace_uri.py              ← Thin wrapper for the fix-uris command (Bug #12)
 src/
 ├── core/                         ← Domain logic, models, database operations
 │   ├── constants.py
@@ -69,6 +70,7 @@ src/
 │   ├── db_operations.py
 │   ├── diagnostic.py
 │   ├── storage_manager.py
+│   ├── uri_fix.py
 │   └── lifecycle.py
 ├── ui_tui/                       ← Full-screen terminal UI
 │   ├── capabilities.py           ← Terminal capability detection
@@ -86,7 +88,7 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (63 tests)
+├── test_core.py                  ← Core logic tests (94 tests)
 └── test_tui.py                   ← TUI framework tests (113 tests)
 ```
 

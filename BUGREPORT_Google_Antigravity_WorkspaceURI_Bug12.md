@@ -1,4 +1,8 @@
-# Google Antigravity IDE — Bug Report: Windows Drive-Letter URI Encoding Mismatch (Bug #12)
+# [Unofficial Community Report] Google Antigravity IDE — Windows Drive-Letter URI Encoding Mismatch (Bug #12)
+
+> **Disclaimer:** This is an **unofficial**, independent, third-party report. It is **not** affiliated
+> with, endorsed by, sponsored by, or in any way related to Google LLC or the Antigravity IDE team.
+> All product names, logos, and brands are property of their respective owners.
 
 > **Component:** `workbench.desktop.main.js` / Frontend URI Comparison & `trajectorySummaries`  
 > **Platform:** Windows 10 / Windows 11  
@@ -72,12 +76,12 @@ In the frontend workbench codebase:
 
 ---
 
-## Community Workaround Script (`fix_workspace_uri.py`)
+## Community Workaround (`fix-uris`)
 
-A standalone Python script was authored by Abhishek Khanra to fix this issue on affected Windows installations:
+Based on root-cause research by Abhishek Khanra, the Antigravity Database Manager ships a `fix-uris` command (also runnable as `python fix_workspace_uri.py`) that works around the bug on affected installations:
 
-1. **Database Normalization**: Normalizes all workspace URIs stored in `state.vscdb` (`trajectorySummaries` Protobuf blob) from `file:///c:/` to `file:///c%3A/`.
-2. **Surgical JS Patching**: Wraps string comparison expressions in `workbench.desktop.main.js` with a lightweight normalizer helper (`_aUF`) that standardizes `c:` to `c%3A` prior to evaluation.
-3. **Checksum Recalculation**: Recalculates and updates the SHA-256 base64 checksum in `product.json` to prevent installation corruption warnings.
+1. **Surgical JS Patching** (primary fix): Wraps the three failing comparison expressions in `workbench.desktop.main.js` with a lightweight normalizer helper (`_aUF`) that canonicalizes `X:`, `X%3A`, and `X%3a` to lowercase `x%3A` prior to evaluation — so past and future conversations match regardless of how either side encodes the URI. Must be re-applied after IDE updates.
+2. **Checksum Recalculation**: Substitutes the SHA-256 base64 checksum value in `product.json` (preserving the rest of the file) to prevent installation corruption warnings.
+3. **Database Normalization** (optional, `--db`): Canonicalizes workspace URIs already stored in `state.vscdb` (`trajectorySummaries` Protobuf blob) from `file:///c:/` to `file:///c%3A/`. Only the URI string fields are rewritten; titles, metadata, and timestamps are preserved byte-for-byte, with a backup created first.
 
 ---

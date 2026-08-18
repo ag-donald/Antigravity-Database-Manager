@@ -8,6 +8,15 @@ All notable changes to this project are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version numbers adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Release dates use ISO 8601 (`YYYY-MM-DD`). File paths are relative to the repository root.
 
+## [Unreleased]
+
+### Added
+- **`fix-uris` command (Bug #12)** (PR #7) — Fixes the Windows "Select where to open the conversation" dialog caused by raw-vs-percent-encoded drive-letter colons. Patches the three strict URI comparisons in `workbench.desktop.main.js` with a case-aware normalizer and refreshes the bundle's SHA-256 checksum in `product.json`; the IDE installation is auto-detected on Windows, macOS, and Linux (`--ide-path` override; re-run after IDE updates, no-op when already patched). Optional `--db` step surgically canonicalizes workspace URIs already stored in `state.vscdb`: only the URI string values in Protobuf Fields 9.1/9.2/17.7 are rewritten — titles, git metadata, timestamps, and unparseable entries are preserved byte-for-byte, a before/after identity check aborts on any drift, and a discoverable `agmercium_recovery_*_uri_fix` backup is created only when a write happens. `--dry-run` previews everything; `--force` overrides the running-IDE guard. `fix_workspace_uri.py` at the repository root is a thin wrapper for community links (`src/core/uri_fix.py`, `src/ui_headless/cli_parser.py`). Root-cause analysis contributed by Abhishek Khanra; `BUGREPORT_Google_Antigravity_WorkspaceURI_Bug12.md` documents the bug for upstream.
+- **Tests** — 31 new cases (207 total): Field 17 encoding schema regression guard, canonical URI forms, surgical normalization guarantees (titles/metadata/timestamps preserved, torn and garbage entries kept verbatim, idempotency), SQLite integration with discoverable backups, and bundle patching (idempotency, dry-run, v2-helper upgrade, checksum formatting preservation) (`tests/test_core.py`).
+
+### Fixed
+- **`is_antigravity_running()` false positives (POSIX)** — Process detection now lists processes via `ps` and excludes this tool's own command line; the previous `pgrep -f antigravity` matched the manager itself on Linux/macOS and missed the capitalized `Antigravity IDE.app` bundle on macOS (`src/core/environment.py`).
+
 ## [8.7.0] - 2026-07-09
 
 ### Added
