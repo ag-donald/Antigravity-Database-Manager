@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  antigravity_database_manager.py backup restore 1\n"
             "  antigravity_database_manager.py workspace list\n"
             "  antigravity_database_manager.py storage inspect\n"
+            "  antigravity_database_manager.py fix-uris --dry-run\n"
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"{TOOL_NAME} v{VERSION}")
@@ -81,6 +82,29 @@ def build_parser() -> argparse.ArgumentParser:
     # --- repair ---
     rep_parser = subparsers.add_parser("repair", help="Autonomously repair detected corruptions")
     rep_parser.add_argument("--target", default="", help="Path to external database (default: current)")
+
+    # --- fix-uris (Bug #12) ---
+    fix_parser = subparsers.add_parser(
+        "fix-uris",
+        help='Fix the Windows "Select where to open the conversation" dialog (Bug #12)',
+        description=(
+            "Patches the IDE's workbench bundle so workspace-URI comparisons "
+            "normalize Windows drive-letter encoding before comparing, and "
+            "refreshes the bundle checksum in product.json. Re-run after every "
+            "IDE update. With --db, also surgically normalizes URIs already "
+            "stored in state.vscdb."
+        ),
+    )
+    fix_parser.add_argument("--db", action="store_true",
+                            help="Also normalize workspace URIs stored in state.vscdb")
+    fix_parser.add_argument("--no-js", action="store_true",
+                            help="Skip the workbench bundle patch (requires --db)")
+    fix_parser.add_argument("--ide-path", default="",
+                            help="Path to the IDE installation (skips auto-detection)")
+    fix_parser.add_argument("--dry-run", action="store_true",
+                            help="Report what would change without writing anything")
+    fix_parser.add_argument("--force", "-f", action="store_true",
+                            help="Proceed even if the Antigravity IDE appears to be running")
 
     # --- conversations ---
     conv_parser = subparsers.add_parser("conversations", help="Manage individual conversations")
@@ -154,6 +178,8 @@ def execute(args: argparse.Namespace, ctx: ApplicationContext) -> int:
         return _cmd_diagnose(args, ctx)
     elif cmd == "repair":
         return _cmd_repair(args, ctx)
+    elif cmd == "fix-uris":
+        return _cmd_fix_uris(args, ctx)
     elif cmd == "conversations":
         return _cmd_conversations(args, ctx)
     elif cmd == "workspace":
@@ -536,3 +562,108 @@ def _cmd_repair(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     else:
         Logger.error(f"Repair failed: {result.error}")
         return 1
+
+
+def _cmd_fix_uris(args: argparse.Namespace, ctx: ApplicationContext) -> int:
+    from .logger import Logger
+    from ..core import uri_fix
+    from ..core.environment import EnvironmentResolver
+
+    dry_run = getattr(args, "dry_run", False)
+    do_js = not getattr(args, "no_js", False)
+    do_db = getattr(args, "db", False)
+
+    Logger.header("Workspace URI Encoding Fix (Bug #12)")
+    if dry_run:
+        Logger.info("Dry run — nothing will be written.")
+
+    if not do_js and not do_db:
+        Logger.error("Nothing to do: --no-js disables the bundle patch and --db was not given.")
+        return 1
+
+    if not sys.platform.startswith("win"):
+        Logger.info("This bug affects Windows drive-letter URIs; on this platform "
+                    "there is usually nothing to fix.")
+
+    if not dry_run and not getattr(args, "force", False) and EnvironmentResolver.is_antigravity_running():
+        Logger.error("Antigravity IDE appears to be running. Close it first — the IDE "
+                     "overwrites these changes when it shuts down — or re-run with --force.")
+        return 1
+
+    exit_code = 0
+
+    if do_js:
+        ide_path = getattr(args, "ide_path", "")
+        app_root = uri_fix.resolve_app_root(ide_path) if ide_path else uri_fix.find_ide_app_root()
+        if app_root is None:
+            if ide_path:
+                Logger.error(f"No workbench bundle found under: {ide_path}")
+            else:
+                Logger.error("IDE installation not found. Pass --ide-path <install directory>.")
+            exit_code = 1
+        else:
+            Logger.info(f"IDE app root: {app_root}")
+            patch = uri_fix.patch_workbench_js(app_root, dry_run=dry_run)
+            if not patch.success:
+                Logger.error(patch.error or "Bundle patch failed.")
+                exit_code = 1
+            else:
+                verb = "Would patch" if dry_run else "Patched"
+                for name in patch.patches_applied:
+                    Logger.success(f"{verb}: {name}")
+                for name in patch.patches_present:
+                    Logger.info(f"Already patched: {name}")
+                for name in patch.patches_missing:
+                    Logger.warn(f"Pattern not found: {name} (minified names change "
+                                "between IDE builds)")
+                if patch.normalizer_upgraded:
+                    Logger.success("Upgraded the v2 normalizer helper (now case-aware).")
+                if not patch.patches_applied and not patch.patches_present:
+                    Logger.warn("No comparison site matched this bundle — this IDE build "
+                                "may need updated patterns. Nothing was changed.")
+                if patch.wrote:
+                    Logger.info(f"Bundle backup: {patch.backup_path}")
+                elif not dry_run and not patch.patches_missing:
+                    Logger.success("Bundle already fully patched — nothing written.")
+
+                if dry_run and (patch.patches_applied or patch.normalizer_upgraded):
+                    # The bundle on disk is still unpatched, so its hash is not
+                    # the value a real run would write — don't preview a number.
+                    Logger.info("Checksum in product.json would be refreshed after patching.")
+                elif patch.patches_applied or patch.patches_present:
+                    checksum = uri_fix.update_product_checksum(app_root, dry_run=dry_run)
+                    if checksum.success:
+                        (Logger.success if checksum.updated else Logger.info)(checksum.note)
+                        if checksum.backup_path:
+                            Logger.info(f"product.json backup: {checksum.backup_path}")
+                    else:
+                        Logger.error(checksum.error or "Checksum update failed.")
+                        exit_code = 1
+    else:
+        Logger.info("Bundle patch skipped (--no-js).")
+
+    if do_db:
+        Logger.info(f"Database: {ctx.db_path}")
+        db_result = uri_fix.normalize_database(ctx.db_path, dry_run=dry_run)
+        if not db_result.success:
+            Logger.error(db_result.error or "Database normalization failed.")
+            exit_code = 1
+        else:
+            Logger.info(f"Entries scanned: {db_result.entries_seen}")
+            if db_result.entries_preserved_unparsed:
+                Logger.warn(f"{db_result.entries_preserved_unparsed} entries could not be "
+                            "parsed and were preserved unchanged (run 'diagnose' for details).")
+            if db_result.entries_changed == 0:
+                Logger.success("All stored URIs already canonical — nothing written.")
+            elif dry_run:
+                Logger.success(f"Would normalize {db_result.entries_changed} entries.")
+            else:
+                Logger.success(f"Normalized {db_result.entries_changed} entries.")
+                Logger.info(f"Backup at: {db_result.backup_path}")
+
+    if exit_code == 0 and not dry_run:
+        Logger.info("Restart the Antigravity IDE to pick up the fix.")
+        if do_js:
+            Logger.info("Re-run this command after every IDE update — updates replace "
+                        "the patched bundle.")
+    return exit_code

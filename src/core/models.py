@@ -134,3 +134,40 @@ class RepairResult:
     uuid_mismatches_fixed: int = 0
     backup_path: str = ""
     error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class UriNormalizeResult:
+    """Result of the Bug #12 workspace-URI normalization of state.vscdb."""
+    success: bool
+    db_path: str = ""
+    entries_seen: int = 0
+    entries_changed: int = 0
+    entries_preserved_unparsed: int = 0
+    wrote: bool = False
+    backup_path: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class IdePatchResult:
+    """Result of patching workbench.desktop.main.js for Bug #12."""
+    success: bool
+    js_path: str = ""
+    patches_applied: tuple[str, ...] = ()
+    patches_present: tuple[str, ...] = ()
+    patches_missing: tuple[str, ...] = ()
+    normalizer_upgraded: bool = False
+    wrote: bool = False
+    backup_path: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ProductChecksumResult:
+    """Result of refreshing the workbench bundle checksum in product.json."""
+    success: bool
+    updated: bool = False
+    note: str = ""
+    backup_path: str = ""
+    error: Optional[str] = None

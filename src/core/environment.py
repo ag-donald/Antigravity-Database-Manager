@@ -76,10 +76,26 @@ class EnvironmentResolver:
                 )
                 return "Antigravity.exe" in res.stdout
             else:
+                # `ps` is used instead of `pgrep -f` because pgrep's flags for
+                # full-commandline listing differ between procps (Linux) and
+                # BSD (macOS), and a bare match on "antigravity" is both
+                # case-sensitive (missing "Antigravity IDE.app" on macOS) and
+                # a false positive on this tool's own command line.
                 res = subprocess.run(
-                    ["pgrep", "-f", "antigravity"],
+                    ["ps", "-eo", "pid=,args="],
                     capture_output=True, text=True, timeout=10,
                 )
-                return bool(res.stdout.strip())
+                own_pid = str(os.getpid())
+                self_markers = ("antigravity_database_manager", "fix_workspace_uri",
+                                "antigravity-database-manager")
+                for line in res.stdout.splitlines():
+                    pid, _, cmd = line.strip().partition(" ")
+                    cmd_lower = cmd.lower()
+                    if pid == own_pid or "antigravity" not in cmd_lower:
+                        continue
+                    if any(marker in cmd_lower for marker in self_markers):
+                        continue
+                    return True
+                return False
         except Exception:
             return False
