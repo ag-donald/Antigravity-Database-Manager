@@ -79,15 +79,17 @@ class ProtobufEncoder:
         Constructs the deeply nested Field 17 workspace URI parameters.
         Schema: Field 17 { Field 1 { Field 1: uri, Field 2: uri }, Field 2 { Field 1: seconds, Field 2: nanos }, Field 3: session_uuid, Field 7: uri_encoded }
 
-        Note: All URI fields use ``uri_encoded`` (percent-encoded colon, e.g.
-        ``file:///c%3A/...``) to match the IDE frontend's expected format.
-        Using ``uri_plain`` (raw colon) causes a string comparison mismatch
-        that triggers the "Select where to open" disambiguation dialog on
-        Windows.  See Bug #12 in BUGS_RESEARCH.md.
+        Note: The Field 17.1 sub-message deliberately uses ``uri_plain``
+        while Field 17.7 uses ``uri_encoded`` — this mirrors the IDE's own
+        observed wire format (docs/schema.proto, ``SessionWorkspace``:
+        "Uses LOWERCASE non-encoded URIs"). Do not make these uniform to
+        address the Bug #12 dialog; that mismatch is fixed at comparison
+        time by ``src/core/uri_fix.py``, not by changing what the encoder
+        writes.
         """
         sub1_inner = (
-            cls.write_string_field(1, ws["uri_encoded"])
-            + cls.write_string_field(2, ws["uri_encoded"])
+            cls.write_string_field(1, ws["uri_plain"])
+            + cls.write_string_field(2, ws["uri_plain"])
         )
         sub2 = cls.write_varint_field(1, epoch_seconds) + cls.write_varint_field(2, nanos)
         inner = (
