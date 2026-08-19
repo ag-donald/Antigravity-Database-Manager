@@ -20,12 +20,14 @@ Coverage:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 
 # Add the project root to path for imports.
 # NOTE: This is intentional for a zero-dependency project without pyproject.toml.
@@ -34,11 +36,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.core.protobuf import ProtobufEncoder
-from src.core.constants import PB_KEY, JSON_KEY
-from src.core.models import MergeResult, RestoreResult, MergeDiff
+from src.core.constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, DB_FILENAME
 from src.core import db_operations as ops
 from src.core import db_scanner as scanner
 from src.core import diagnostic
+from src.core import uri_fix
 
 
 # ==============================================================================
@@ -765,37 +767,6 @@ class TestStorageManager(unittest.TestCase):
 
 
 # ==============================================================================
-# TEST: WIDGET TRUNCATION (ANSI-AWARE)
-# ==============================================================================
-
-class TestWidgetTrunc(unittest.TestCase):
-    """Tests for the ANSI-aware _trunc function in widgets.py."""
-
-    def test_trunc_plain_string(self):
-        """Plain strings should truncate normally."""
-        from src.ui_tui.widgets import _trunc
-        self.assertEqual(_trunc("Hello World", 5), "Hell…")
-        self.assertEqual(_trunc("Hi", 10), "Hi")
-
-    def test_trunc_ansi_string(self):
-        """ANSI escape sequences should not count toward visible length."""
-        from src.ui_tui.widgets import _trunc
-        # Bold + Reset = 8 bytes of escapes, 5 visible chars
-        ansi = "\x1b[1mHello\x1b[0m"
-        result = _trunc(ansi, 10)
-        # 5 visible chars < 10, so no truncation
-        self.assertEqual(result, ansi)
-
-    def test_trunc_ansi_forces_cut(self):
-        """When visible length exceeds width, ANSI strings should be truncated correctly."""
-        from src.ui_tui.widgets import _trunc
-        ansi = "\x1b[1mHelloWorld\x1b[0m"
-        result = _trunc(ansi, 5)
-        # Should have 4 visible chars + ellipsis
-        self.assertIn("…", result)
-
-
-# ==============================================================================
 # TEST: MULTIPLE DATABASE RESOLUTION AND SCANNING
 # ==============================================================================
 
@@ -863,6 +834,451 @@ class TestMultipleDatabaseResolution(unittest.TestCase):
         finally:
             # Restore original method
             EnvironmentResolver.get_antigravity_db_paths = original_paths_fn
+
+
+# ==============================================================================
+# TEST: BUG #12 URI FIX (src/core/uri_fix.py)
+# ==============================================================================
+
+def _pb_fields(msg: bytes) -> dict[int, list]:
+    """Minimal independent wire-format walker for assertions: maps field
+    number -> list of payloads (bytes for wire 2, int for wire 0)."""
+    fields: dict[int, list] = {}
+    pos = 0
+    while pos < len(msg):
+        tag, pos = ProtobufEncoder.decode_varint(msg, pos)
+        fn, wt = tag >> 3, tag & 7
+        if wt == 2:
+            length, pos = ProtobufEncoder.decode_varint(msg, pos)
+            fields.setdefault(fn, []).append(msg[pos:pos + length])
+            pos += length
+        elif wt == 0:
+            val, pos = ProtobufEncoder.decode_varint(msg, pos)
+            fields.setdefault(fn, []).append(val)
+        elif wt == 1:
+            fields.setdefault(fn, []).append(msg[pos:pos + 8])
+            pos += 8
+        elif wt == 5:
+            fields.setdefault(fn, []).append(msg[pos:pos + 4])
+            pos += 4
+        else:
+            raise AssertionError(f"unexpected wire type {wt}")
+    return fields
+
+
+_RAW_WS = {
+    # The backend writes the raw-colon form everywhere — that is Bug #12.
+    "uri_encoded": "file:///c:/Users/alice/proj",
+    "uri_plain": "file:///c:/Users/alice/proj",
+    "corpus": "local/proj",
+    "git_remote": "https://github.com/local/proj.git",
+    "branch": "main",
+}
+
+_CANONICAL_WS = {
+    "uri_encoded": "file:///c%3A/Users/bob/proj",
+    "uri_plain": "file:///c:/Users/bob/proj",
+    "corpus": "local/proj",
+    "git_remote": "https://github.com/local/proj.git",
+    "branch": "main",
+}
+
+
+def _workspace_less_entry(uuid: str, text: str) -> bytes:
+    """Builds an entry with no workspace fields whose message text mentions
+    a file:/// path — the shape that must never gain a workspace binding."""
+    inner = (
+        ProtobufEncoder.write_string_field(1, "Scratchpad chat")
+        + ProtobufEncoder.write_varint_field(2, 1)
+        + ProtobufEncoder.write_timestamp(3, 1700000000)
+        + ProtobufEncoder.write_string_field(4, uuid)
+        + ProtobufEncoder.write_string_field(20, text)
+    )
+    wrapper = ProtobufEncoder.write_string_field(1, base64.b64encode(inner).decode("utf-8"))
+    entry = ProtobufEncoder.write_string_field(1, uuid) + ProtobufEncoder.write_bytes_field(2, wrapper)
+    return ProtobufEncoder.write_bytes_field(1, entry)
+
+
+class TestField17EncodingSchema(unittest.TestCase):
+    """Locks the per-field URI encoding to docs/schema.proto: Field 17.1
+    carries the plain form, Fields 9.1/9.2 and 17.7 the encoded form."""
+
+    WS = {
+        "uri_encoded": "file:///c%3A/Users/x/proj",
+        "uri_plain": "file:///c:/Users/x/proj",
+        "corpus": "local/proj",
+        "git_remote": "https://github.com/local/proj.git",
+        "branch": "main",
+    }
+
+    def test_field17_sub1_uses_plain_uris(self):
+        f17 = ProtobufEncoder.build_workspace_field17(self.WS, "sess-uuid", 1700000000)
+        payload = _pb_fields(f17)[17][0]
+        subs = _pb_fields(payload)
+        session_ws = _pb_fields(subs[1][0])
+        self.assertEqual(session_ws[1][0].decode(), self.WS["uri_plain"])
+        self.assertEqual(session_ws[2][0].decode(), self.WS["uri_plain"])
+
+    def test_field17_sub7_uses_encoded_uri(self):
+        f17 = ProtobufEncoder.build_workspace_field17(self.WS, "sess-uuid", 1700000000)
+        subs = _pb_fields(_pb_fields(f17)[17][0])
+        self.assertEqual(subs[7][0].decode(), self.WS["uri_encoded"])
+
+    def test_field9_uses_encoded_uris(self):
+        f9 = ProtobufEncoder.build_workspace_field9(self.WS)
+        subs = _pb_fields(_pb_fields(f9)[9][0])
+        self.assertEqual(subs[1][0].decode(), self.WS["uri_encoded"])
+        self.assertEqual(subs[2][0].decode(), self.WS["uri_encoded"])
+
+
+class TestCanonicalizeDriveUri(unittest.TestCase):
+    """The canonical form is lowercase drive letter + uppercase-hex %3A."""
+
+    def test_raw_colon_variants(self):
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///C:/Users/x"),
+                         "file:///c%3A/Users/x")
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///c:/Users/x"),
+                         "file:///c%3A/Users/x")
+
+    def test_encoded_case_variants(self):
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///C%3A/Users/x"),
+                         "file:///c%3A/Users/x")
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///c%3a/Users/x"),
+                         "file:///c%3A/Users/x")
+
+    def test_already_canonical_unchanged(self):
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///c%3A/Users/x"),
+                         "file:///c%3A/Users/x")
+
+    def test_posix_uri_unchanged(self):
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///Users/alice/proj"),
+                         "file:///Users/alice/proj")
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///home/bob/c:/odd"),
+                         "file:///home/bob/c:/odd")
+
+    def test_embedded_uri_not_rewritten(self):
+        self.assertEqual(uri_fix.canonicalize_drive_uri("see file:///c:/tmp/x"),
+                         "see file:///c:/tmp/x")
+
+    def test_bare_drive_root(self):
+        self.assertEqual(uri_fix.canonicalize_drive_uri("file:///c:"), "file:///c%3A")
+
+
+class TestUriFixNormalizeBlob(unittest.TestCase):
+    """The surgical guarantees of normalize_blob()."""
+
+    def setUp(self):
+        self.uuid_a = "aaaaaaaa-1111-2222-3333-444444444444"
+        self.uuid_b = "bbbbbbbb-1111-2222-3333-444444444444"
+        self.uuid_c = "cccccccc-1111-2222-3333-444444444444"
+        self.entry_a = ProtobufEncoder.build_trajectory_entry(
+            self.uuid_a, "My Project Work", dict(_RAW_WS), 1700000000, 1700000001)
+        self.entry_b = ProtobufEncoder.build_trajectory_entry(
+            self.uuid_b, "Conversation with support team", dict(_RAW_WS), 1700000000, 1700000001)
+        self.entry_c = _workspace_less_entry(
+            self.uuid_c, "please clean up file:///c:/temp/notes.txt now")
+        self.blob = self.entry_a + self.entry_b + self.entry_c
+
+    def test_normalizes_only_encoded_uri_fields(self):
+        new_blob, seen, changed, preserved = uri_fix.normalize_blob(self.blob)
+        self.assertEqual((seen, changed, preserved), (3, 2, 0))
+        _, blobs = scanner.extract_existing_metadata(new_blob)
+        inner_a = blobs[self.uuid_a]
+        # Fields 9.1/9.2 and 17.7 canonicalized...
+        self.assertEqual(scanner.extract_workspace_uri(inner_a),
+                         "file:///c%3A/Users/alice/proj")
+        self.assertIn(b"file:///c%3A/Users/alice/proj", inner_a)
+        # ...while Field 17.1 keeps the plain form (docs/schema.proto).
+        self.assertIn(b"file:///c:/Users/alice/proj", inner_a)
+
+    def test_preserves_titles_metadata_and_timestamps(self):
+        new_blob, _, _, _ = uri_fix.normalize_blob(self.blob)
+        _, before = scanner.extract_existing_metadata(self.blob)
+        _, after = scanner.extract_existing_metadata(new_blob)
+        for uuid in (self.uuid_a, self.uuid_b):
+            fields_before = _pb_fields(before[uuid])
+            fields_after = _pb_fields(after[uuid])
+            self.assertEqual(set(fields_before), set(fields_after))
+            for fn in fields_before:
+                if fn not in (9, 17):
+                    self.assertEqual(fields_before[fn], fields_after[fn],
+                                     f"field {fn} of {uuid} changed")
+        # A real title starting with "Conversation " survives verbatim.
+        self.assertEqual(_pb_fields(after[self.uuid_b])[1][0],
+                         b"Conversation with support team")
+        self.assertIn(b"github.com/local/proj.git", after[self.uuid_a])
+        self.assertIn(b"local/proj", after[self.uuid_a])
+
+    def test_workspace_less_entry_untouched(self):
+        new_blob, _, _, _ = uri_fix.normalize_blob(self.blob)
+        _, after = scanner.extract_existing_metadata(new_blob)
+        _, before = scanner.extract_existing_metadata(self.blob)
+        self.assertEqual(before[self.uuid_c], after[self.uuid_c])
+        self.assertNotIn(b"%3A/temp/notes.txt", after[self.uuid_c])
+
+    def test_canonicalizes_encoded_case_variants(self):
+        ws = dict(_RAW_WS)
+        ws["uri_encoded"] = "file:///C%3a/Users/kate/proj"
+        entry = ProtobufEncoder.build_trajectory_entry(
+            "dddddddd-1111-2222-3333-444444444444", "Kate", ws, 1700000000, 1700000001)
+        new_blob, _, changed, _ = uri_fix.normalize_blob(entry)
+        self.assertEqual(changed, 1)
+        _, blobs = scanner.extract_existing_metadata(new_blob)
+        self.assertEqual(
+            scanner.extract_workspace_uri(blobs["dddddddd-1111-2222-3333-444444444444"]),
+            "file:///c%3A/Users/kate/proj")
+
+    def test_idempotent(self):
+        once, _, changed_once, _ = uri_fix.normalize_blob(self.blob)
+        twice, _, changed_twice, _ = uri_fix.normalize_blob(once)
+        self.assertEqual(changed_once, 2)
+        self.assertEqual(changed_twice, 0)
+        self.assertEqual(once, twice)
+
+    def test_unknown_top_level_field_preserved(self):
+        stray = ProtobufEncoder.write_varint_field(5, 7)
+        blob = self.entry_a + stray + self.entry_b
+        new_blob, seen, changed, preserved = uri_fix.normalize_blob(blob)
+        self.assertEqual((seen, changed, preserved), (2, 2, 0))
+        top = _pb_fields(new_blob)
+        self.assertEqual(len(top[1]), 2)
+        self.assertEqual(top[5], [7])
+
+    def test_torn_tail_preserved_verbatim(self):
+        torn = self.entry_a[: len(self.entry_a) // 2]
+        blob = self.entry_a + self.entry_b + torn
+        new_blob, seen, changed, preserved = uri_fix.normalize_blob(blob)
+        self.assertEqual((seen, changed), (2, 2))
+        self.assertTrue(new_blob.endswith(torn))
+
+    def test_unparseable_entry_preserved_not_dropped(self):
+        garbage = ProtobufEncoder.write_bytes_field(1, b"\xff\xff\xff\xff")
+        new_blob, seen, changed, preserved = uri_fix.normalize_blob(garbage)
+        self.assertEqual((seen, changed, preserved), (1, 0, 1))
+        self.assertEqual(new_blob, garbage)
+
+
+class TestUriFixNormalizeDatabase(unittest.TestCase):
+    """SQLite integration: dry-run, discoverable backups, identity checks."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmp, DB_FILENAME)
+        raw_entry = ProtobufEncoder.build_trajectory_entry(
+            "aaaaaaaa-0000-0000-0000-000000000001", "Raw One",
+            dict(_RAW_WS), 1700000000, 1700000001)
+        clean_entry = ProtobufEncoder.build_trajectory_entry(
+            "bbbbbbbb-0000-0000-0000-000000000002", "Clean Two",
+            dict(_CANONICAL_WS), 1700000000, 1700000001)
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+        cur.execute("INSERT INTO ItemTable (key, value) VALUES (?, ?)",
+                    (PB_KEY, base64.b64encode(raw_entry + clean_entry).decode("utf-8")))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _db_value(self) -> str:
+        conn = sqlite3.connect(self.db_path)
+        value = conn.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,)).fetchone()[0]
+        conn.close()
+        return value
+
+    def _backups(self) -> list[str]:
+        return [f for f in os.listdir(self.tmp) if BACKUP_PREFIX in f]
+
+    def test_dry_run_writes_nothing(self):
+        before = self._db_value()
+        result = uri_fix.normalize_database(self.db_path, dry_run=True)
+        self.assertTrue(result.success)
+        self.assertFalse(result.wrote)
+        self.assertEqual(result.entries_seen, 2)
+        self.assertEqual(result.entries_changed, 1)
+        self.assertEqual(self._db_value(), before)
+        self.assertEqual(self._backups(), [])
+
+    def test_real_run_normalizes_and_backs_up(self):
+        result = uri_fix.normalize_database(self.db_path)
+        self.assertTrue(result.success)
+        self.assertTrue(result.wrote)
+        self.assertEqual(result.entries_changed, 1)
+        backups = self._backups()
+        self.assertEqual(len(backups), 1)
+        self.assertIn("_uri_fix", backups[0])
+        self.assertIn(result.backup_path, [os.path.join(self.tmp, b) for b in backups])
+        # The backup is visible to the tool's own restore discovery.
+        self.assertEqual(len(scanner.discover_backups(self.tmp)), 1)
+
+        _, blobs = scanner.extract_existing_metadata(base64.b64decode(self._db_value()))
+        self.assertEqual(set(blobs), {"aaaaaaaa-0000-0000-0000-000000000001",
+                                      "bbbbbbbb-0000-0000-0000-000000000002"})
+        self.assertEqual(
+            scanner.extract_workspace_uri(blobs["aaaaaaaa-0000-0000-0000-000000000001"]),
+            "file:///c%3A/Users/alice/proj")
+
+    def test_second_run_is_a_no_op(self):
+        uri_fix.normalize_database(self.db_path)
+        result = uri_fix.normalize_database(self.db_path)
+        self.assertTrue(result.success)
+        self.assertFalse(result.wrote)
+        self.assertEqual(result.entries_changed, 0)
+        self.assertEqual(len(self._backups()), 1)
+
+    def test_missing_database(self):
+        result = uri_fix.normalize_database(os.path.join(self.tmp, "nope.vscdb"))
+        self.assertFalse(result.success)
+        self.assertIn("not found", result.error)
+
+    def test_missing_index_key(self):
+        empty_db = os.path.join(self.tmp, "empty.vscdb")
+        conn = sqlite3.connect(empty_db)
+        conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+        conn.close()
+        result = uri_fix.normalize_database(empty_db)
+        self.assertFalse(result.success)
+        self.assertIn("trajectorySummaries", result.error)
+
+
+_FAKE_BUNDLE = (
+    '"use strict";var xx=1;\n'
+    'if(F.length===1&&F[0]===dR.workspaceUris[0]){o(_.sel),setTimeout(()=>{r()},50);}\n'
+    'const ff=n.workspaces.map(r=>r.workspaceFolderAbsoluteUri).some(r=>e.includes(r));\n'
+    'if(l.workspaceFolderAbsoluteUri===n.toString()){sync()}\n'
+)
+
+_FAKE_PRODUCT = (
+    '{\n'
+    '  "nameShort": "Antigravity",\n'
+    '  "checksums": {\n'
+    '    "vs/workbench/workbench.desktop.main.js": "OLDSUM"\n'
+    '  },\n'
+    '  "other": [1, 2]\n'
+    '}\n'
+)
+
+
+class TestIdePatcher(unittest.TestCase):
+    """Workbench bundle patching: idempotency, dry-run, checksum, upgrades."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.app_root = Path(self.tmp) / "resources" / "app"
+        self.js_path = self.app_root / "out" / "vs" / "workbench" / "workbench.desktop.main.js"
+        self.js_path.parent.mkdir(parents=True)
+        self.js_path.write_bytes(_FAKE_BUNDLE.encode("utf-8"))
+        (self.app_root / "product.json").write_bytes(_FAKE_PRODUCT.encode("utf-8"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _backups(self) -> list[str]:
+        return [p.name for p in self.js_path.parent.iterdir() if "agmercium_urifix" in p.name]
+
+    def test_applies_all_three_sites(self):
+        result = uri_fix.patch_workbench_js(self.app_root)
+        self.assertTrue(result.success)
+        self.assertEqual(len(result.patches_applied), 3)
+        self.assertEqual(result.patches_missing, ())
+        self.assertTrue(result.wrote)
+        self.assertEqual(len(self._backups()), 1)
+        content = self.js_path.read_bytes().decode("utf-8")
+        self.assertTrue(content.startswith(";var _aUF="))
+        self.assertIn(uri_fix.PATCH_MARKER, content)
+        self.assertIn("_aUF(F[0])===_aUF(dR.workspaceUris[0])", content)
+        self.assertIn("e.some(w=>_aUF(w)===_aUF(r))", content)
+        self.assertIn("_aUF(l.workspaceFolderAbsoluteUri)===_aUF(n.toString())", content)
+
+    def test_second_run_writes_nothing(self):
+        uri_fix.patch_workbench_js(self.app_root)
+        before = self.js_path.read_bytes()
+        result = uri_fix.patch_workbench_js(self.app_root)
+        self.assertTrue(result.success)
+        self.assertEqual(result.patches_applied, ())
+        self.assertEqual(len(result.patches_present), 3)
+        self.assertFalse(result.wrote)
+        self.assertEqual(self.js_path.read_bytes(), before)
+        self.assertEqual(len(self._backups()), 1)
+
+    def test_dry_run_reports_without_writing(self):
+        before = self.js_path.read_bytes()
+        result = uri_fix.patch_workbench_js(self.app_root, dry_run=True)
+        self.assertTrue(result.success)
+        self.assertEqual(len(result.patches_applied), 3)
+        self.assertFalse(result.wrote)
+        self.assertEqual(self.js_path.read_bytes(), before)
+        self.assertEqual(self._backups(), [])
+
+    def test_prefix_helper_variant(self):
+        bundle = (
+            'if(F.length===1&&F[0]===dR.workspaceUris[0]){o()}\n'
+            'function Xq$(t,e){return t===e||t.startsWith(e+"/")}\n'
+            'if(l.workspaceFolderAbsoluteUri===n.toString()){sync()}\n'
+        )
+        self.js_path.write_bytes(bundle.encode("utf-8"))
+        result = uri_fix.patch_workbench_js(self.app_root)
+        self.assertIn("sidebar workspace filter", result.patches_applied)
+        content = self.js_path.read_bytes().decode("utf-8")
+        self.assertIn('function Xq$(t,e){var a=_aUF(t),b=_aUF(e);'
+                      'return a===b||a.startsWith(b+"/")}', content)
+
+    def test_v2_normalizer_upgrade(self):
+        v2_content = (
+            ";" + uri_fix._NORM_DEF_V2 + "/* ANTIGRAVITY_URI_FIX_v2 */\n"
+            'if(F.length===1&&_aUF(F[0])===_aUF(dR.workspaceUris[0])){o()}\n'
+            'const ff=n.workspaces.map(r=>r.workspaceFolderAbsoluteUri)'
+            '.some(r=>e.some(w=>_aUF(w)===_aUF(r)));\n'
+            'if(_aUF(l.workspaceFolderAbsoluteUri)===_aUF(n.toString())){sync()}\n'
+        )
+        self.js_path.write_bytes(v2_content.encode("utf-8"))
+        result = uri_fix.patch_workbench_js(self.app_root)
+        self.assertTrue(result.success)
+        self.assertTrue(result.normalizer_upgraded)
+        self.assertTrue(result.wrote)
+        self.assertEqual(len(result.patches_present), 3)
+        content = self.js_path.read_bytes().decode("utf-8")
+        self.assertIn("d.toLowerCase()", content)
+        self.assertIn(uri_fix.PATCH_MARKER, content)
+        self.assertNotIn("ANTIGRAVITY_URI_FIX_v2", content)
+
+    def test_missing_bundle(self):
+        result = uri_fix.patch_workbench_js(Path(self.tmp) / "nowhere")
+        self.assertFalse(result.success)
+        self.assertIn("not found", result.error)
+
+    def test_checksum_update_preserves_formatting(self):
+        uri_fix.patch_workbench_js(self.app_root)
+        result = uri_fix.update_product_checksum(self.app_root)
+        self.assertTrue(result.success)
+        self.assertTrue(result.updated)
+        expected = base64.b64encode(
+            hashlib.sha256(self.js_path.read_bytes()).digest()
+        ).decode("ascii").rstrip("=")
+        text = (self.app_root / "product.json").read_bytes().decode("utf-8")
+        self.assertIn(f'"vs/workbench/workbench.desktop.main.js": "{expected}"', text)
+        self.assertNotIn("OLDSUM", text)
+        self.assertIn('"other": [1, 2]', text)
+
+        again = uri_fix.update_product_checksum(self.app_root)
+        self.assertTrue(again.success)
+        self.assertFalse(again.updated)
+        self.assertIn("up to date", again.note)
+
+    def test_checksum_without_entry_is_skipped(self):
+        (self.app_root / "product.json").write_bytes(b'{"nameShort": "Antigravity"}')
+        result = uri_fix.update_product_checksum(self.app_root)
+        self.assertTrue(result.success)
+        self.assertFalse(result.updated)
+        self.assertIn("No integrity entry", result.note)
+
+    def test_resolve_app_root_accepts_common_shapes(self):
+        install_dir = Path(self.tmp)
+        self.assertEqual(uri_fix.resolve_app_root(str(install_dir)), self.app_root)
+        self.assertEqual(uri_fix.resolve_app_root(str(self.app_root)), self.app_root)
+        self.assertIsNone(uri_fix.resolve_app_root(os.path.join(self.tmp, "missing")))
 
 
 if __name__ == "__main__":

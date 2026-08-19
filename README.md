@@ -48,7 +48,7 @@ The underlying conversation data files (`.pb` in older IDE versions, SQLite `.db
 
 ### Community Bug Reports
 
-This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **11 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
+This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **12 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
 
 📋 **[Full Bug Catalog → BUGS_RESEARCH.md](BUGS_RESEARCH.md)**
 
@@ -65,6 +65,7 @@ This is a **widely reported issue** across the Google AI Developers Forum, Reddi
 | 9 | Ghost Bytes / Double-Wrapping | Encoding corruption in Protobuf blob |
 | 10 | storage.json Desync | Parallel data stores fall out of sync |
 | 11 | Scratch Session Disabled | Workspace-less conversations hidden after upgrade |
+| 12 | Windows URI Encoding Mismatch | Raw vs percent-encoded drive-letter colons break workspace association |
 
 ### Root Cause
 
@@ -150,6 +151,7 @@ Protobuf field layout is documented in [docs/schema.proto](docs/schema.proto).
 ```
 antigravity_database_manager.py   ← Entry point
 build_release.py                  ← Builds the cross-platform .pyz zipapp
+fix_workspace_uri.py              ← Thin wrapper for the fix-uris command (Bug #12)
 src/
 ├── core/                         ← Domain logic, models, database operations
 │   ├── constants.py
@@ -161,16 +163,15 @@ src/
 │   ├── db_operations.py
 │   ├── diagnostic.py
 │   ├── storage_manager.py
+│   ├── uri_fix.py
 │   └── lifecycle.py
 ├── ui_tui/                       ← Full-screen terminal UI
 │   ├── capabilities.py           ← Terminal capability detection
-│   ├── theme/                    ← Semantic colors, styles, gradients, icons
-│   ├── events.py                 ← Event bus, key bindings, focus management
-│   ├── core.py                   ← Component base, layout engine
+│   ├── theme/                    ← Semantic colors, styles, borders, icons
+│   ├── core.py                   ← ANSI-aware text utilities, Component base
 │   ├── components.py             ← Reusable UI components
-│   ├── animation.py              ← Easing, animated values, transitions
+│   ├── animation.py              ← Screen-transition easing
 │   ├── engine.py                 ← Double-buffered terminal I/O
-│   ├── widgets.py                ← Composite panels (health report, diagnostics, …)
 │   ├── app.py                    ← Application event loop
 │   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
 └── ui_headless/                  ← CLI parser and interactive menus
@@ -178,8 +179,8 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (63 tests)
-└── test_tui.py                   ← TUI framework tests (113 tests)
+├── test_core.py                  ← Core logic tests (91 tests)
+└── test_tui.py                   ← TUI framework tests (50 tests)
 ```
 
 ### Recovery Pipeline Phases
@@ -413,6 +414,17 @@ python antigravity_database_manager.py repair --target path.vscdb
 ```
 
 Auto-fixes corruptions found by `diagnose`. Creates a backup first.
+
+#### `fix-uris` — Workspace URI Encoding Fix (Bug #12)
+
+```bash
+python antigravity_database_manager.py fix-uris             # patch the IDE bundle
+python antigravity_database_manager.py fix-uris --dry-run   # preview without writing
+python antigravity_database_manager.py fix-uris --db        # also normalize state.vscdb
+python antigravity_database_manager.py fix-uris --db --no-js --ide-path "C:/path/to/Antigravity IDE"
+```
+
+Fixes the Windows "Select where to open the conversation" dialog (Bug #12 in [BUGS_RESEARCH.md](BUGS_RESEARCH.md)): the IDE backend stores workspace URIs with a raw drive-letter colon while the frontend compares against the percent-encoded form. The command patches the three failing comparisons in `workbench.desktop.main.js` to normalize encoding (and drive-letter case) before comparing, then refreshes the bundle checksum in `product.json`. The IDE installation is auto-detected on Windows, macOS, and Linux; the bug itself only manifests with Windows drive-letter URIs. Re-run after every IDE update — an already-patched bundle is detected and left untouched. `--db` additionally canonicalizes URIs already stored in `state.vscdb` with a surgical rewrite that touches only URI fields, preserves everything else byte-for-byte, and creates a discoverable backup first. Refuses to run while the IDE is open (override with `--force`). `python fix_workspace_uri.py` is an equivalent standalone wrapper.
 
 #### `merge` — Database Merge
 

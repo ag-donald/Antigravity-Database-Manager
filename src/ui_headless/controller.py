@@ -8,11 +8,15 @@ choose not to use the full-screen interface.
 from __future__ import annotations
 
 import os
-import sys
 
+from ..core.environment import EnvironmentResolver
 from ..core.lifecycle import ApplicationContext
 from ..core import db_operations as ops
-from ..core.db_scanner import scan_all, format_snapshot_table, list_conversations, health_check, analyze_workspaces
+from ..core.db_scanner import (
+    scan_all, format_snapshot_table, list_conversations, health_check,
+    analyze_workspaces, summarize_workspace_health, db_install_label,
+    normalize_path,
+)
 from ..core import storage_manager as sm
 from .logger import Logger
 
@@ -25,13 +29,12 @@ def run_interactive(ctx: ApplicationContext) -> int:
     Logger.banner()
 
     # Database path resolution / selection
-    from ..core.environment import EnvironmentResolver
     if not ctx.db_path:
         db_paths = [p for p in EnvironmentResolver.get_antigravity_db_paths() if os.path.isfile(p)]
         if len(db_paths) > 1:
             Logger.header("Multiple Databases Detected")
             for idx, path in enumerate(db_paths):
-                label = "Antigravity IDE" if "Antigravity IDE" in path else "Antigravity (deprecated)"
+                label = db_install_label(path)
                 print(f"  [{idx+1}] {label} at {path}")
             print()
             try:
@@ -204,14 +207,7 @@ def _menu_recover(ctx: ApplicationContext) -> None:
     )
 
     if result.success:
-        Logger.header("Recovery Complete")
-        Logger.success(f"Conversations rebuilt:  {result.conversations_rebuilt}")
-        Logger.success(f"Workspaces mapped:     {result.workspaces_mapped}")
-        Logger.success(f"Timestamps injected:   {result.timestamps_injected}")
-        Logger.success(f"JSON entries added:    {result.json_added}")
-        Logger.success(f"JSON entries patched:  {result.json_patched}")
-        Logger.success(f"JSON entries deleted:  {result.json_deleted}")
-        Logger.info(f"Backup at: {result.backup_path}")
+        Logger.recovery_summary(result)
     else:
         Logger.error(f"Recovery failed: {result.error}")
 
@@ -270,8 +266,7 @@ def _menu_merge(ctx: ApplicationContext) -> None:
 
     result = ops.execute_merge(source, ctx.db_path, strategy)
     if result.success:
-        Logger.success(f"Merge complete: +{result.added} added, ~{result.updated} updated, ={result.skipped} skipped")
-        Logger.info(f"Backup at: {result.backup_path}")
+        Logger.merge_summary(result)
     else:
         Logger.error(f"Merge failed: {result.error}")
 
@@ -290,10 +285,11 @@ def _menu_create(ctx: ApplicationContext) -> None:
         Logger.warn("No path provided.")
         return
 
-    if ops.create_empty_db(path):
+    result = ops.create_empty_db(path)
+    if result:
         Logger.success(f"Created empty database: {path}")
     else:
-        Logger.error("Failed to create database.")
+        Logger.error(f"Failed to create database: {result.error}")
 
     _pause()
 
@@ -321,16 +317,18 @@ def _browse_conversation_detail(ctx: ApplicationContext, sel) -> None:
     if act == 'v':
         print(ops.get_conversation_payload(ctx.db_path, sel.uuid))
     elif act == 'd':
-        if ops.delete_conversation(ctx.db_path, sel.uuid):
+        result = ops.delete_conversation(ctx.db_path, sel.uuid)
+        if result:
             Logger.success("Deleted successfully.")
         else:
-            Logger.error("Failed to delete.")
+            Logger.error(f"Failed to delete: {result.error}")
     elif act == 'r':
         new_title = input("  New title: ").strip()
-        if new_title and ops.rename_conversation(ctx.db_path, sel.uuid, new_title):
+        result = ops.rename_conversation(ctx.db_path, sel.uuid, new_title)
+        if result:
             Logger.success("Renamed successfully.")
         else:
-            Logger.error("Failed to rename.")
+            Logger.error(f"Failed to rename: {result.error}")
 
 
 def _menu_browse(ctx: ApplicationContext) -> None:
@@ -428,22 +426,22 @@ def _menu_workspaces(ctx: ApplicationContext) -> None:
         _pause()
         return
 
-    healthy = 0
     for d in diagnostics:
         if d.exists_on_disk and d.is_accessible:
             icon = "✓"
-            healthy += 1
         elif d.exists_on_disk:
             icon = "⚠"
         else:
             icon = "✗"
         print(f"  {icon} {d.decoded_path}  ({len(d.bound_conversations)} convs)")
 
+    healthy, warn, missing = summarize_workspace_health(diagnostics)
     print()
     Logger.info(f"Total: {len(diagnostics)} workspaces, {healthy} healthy")
-    missing = len(diagnostics) - healthy
+    if warn:
+        Logger.warn(f"{warn} workspace(s) exist but are not accessible.")
     if missing:
-        Logger.warn(f"{missing} workspace(s) have issues.")
+        Logger.warn(f"{missing} workspace(s) missing from disk.")
     _pause()
 
 
@@ -499,17 +497,13 @@ def _menu_storage(ctx: ApplicationContext) -> None:
 
 def _menu_switch_db(ctx: ApplicationContext) -> None:
     Logger.header("Switch Active Database")
-    from ..core.environment import EnvironmentResolver
     db_paths = [p for p in EnvironmentResolver.get_antigravity_db_paths() if os.path.isfile(p)]
 
-    def norm(p: str) -> str:
-        return os.path.abspath(os.path.realpath(os.path.expanduser(p))) if p else ""
-
-    norm_active = norm(ctx.db_path)
+    norm_active = normalize_path(ctx.db_path)
     print("  Detected Databases:")
     for idx, path in enumerate(db_paths):
-        active_str = " (ACTIVE)" if norm(path) == norm_active else ""
-        label = "Antigravity IDE" if "Antigravity IDE" in path else "Antigravity (deprecated)"
+        active_str = " (ACTIVE)" if normalize_path(path) == norm_active else ""
+        label = db_install_label(path)
         print(f"    [{idx+1}] {label} at {path}{active_str}")
 
     print()

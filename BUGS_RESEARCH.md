@@ -192,16 +192,35 @@ Conversations created in scratchpad / non-project contexts are completely inacce
 
 | Platform | Thread Count | Notable Topics |
 |----------|-------------|----------------|
-| **Google AI Dev Forum** | 10+ verified | Index reset after update, power outage corruption, SSH session loss, Agent Manager self-deletion, scratch session disabled |
+| **Google AI Dev Forum** | 12+ verified | Index reset after update, power outage corruption, SSH session loss, Agent Manager self-deletion, scratch session disabled, Windows URI encoding mismatch |
 | **Reddit** (r/GoogleAntigravityIDE, r/google_antigravity) | 5+ threads | Random history disappearance, workspace re-binding workarounds, version rollback discussions, long-context truncation |
 | **GitHub** | 3+ issues | Gemini CLI history loss after tool updates, token limit restarts, gemini-chat-history.bin recovery |
 | **YouTube** | 2+ videos | Gemini 3.1 update history wipe walkthrough, Google One support acknowledgment |
 
 ---
 
+## Bug #12 — Windows Drive-Letter URI Encoding Mismatch ("Select Where to Open" Dialog)
+
+On Windows, conversations always show the "Select where to open the conversation" disambiguation dialog instead of opening directly in the correct workspace — even for brand-new conversations in the workspace where they were just created.
+
+| Detail | Description |
+|--------|-------------|
+| **Trigger** | Any conversation opened on Windows when the IDE's backend and frontend disagree on drive-letter encoding in workspace URIs |
+| **Symptoms** | Every conversation click presents a dialog: "Select where to open the conversation — Open in current window / Open in workspace". Even fresh conversations in fresh projects. The conversation sidebar (bottom-right panel) may not show workspace-specific history. |
+| **Root Cause** | The IDE's backend (`jetskiAgent`) writes workspace URIs with a raw colon — `file:///c:/Users/...` — while the frontend expects percent-encoded colons — `file:///c%3A/Users/...`. Three strict `===` string comparisons in `workbench.desktop.main.js` compare these mismatched strings and always fail, triggering the disambiguation dialog. This is a confirmed bug reported to Google as of May 2026 and remains unpatched as of v2.1.1. |
+| **Our Fix** | The `fix-uris` command (also runnable as `python fix_workspace_uri.py`). **Primary: JavaScript patch** — wraps the three `===` comparisons in `workbench.desktop.main.js` with a case-aware normalizer (`_aUF`) that canonicalizes `X:`, `X%3A`, and `X%3a` to lowercase `x%3A` before comparing, fixing past *and* future conversations regardless of how either side encodes URIs, and updates the SHA-256 checksum in `product.json` (base64 format, not hex) to prevent the "installation appears corrupt" toast. **Optional: database normalization (`--db`)** — surgically canonicalizes workspace URIs already stored in the `trajectorySummaries` Protobuf blob: only the URI string values in Fields 9.1/9.2/17.7 are rewritten, while titles, git metadata, timestamps, and any entry that cannot be strictly parsed are preserved byte-for-byte, behind a discoverable backup and a before/after identity check. |
+| **Note** | The JS patch must be re-applied after every IDE update or reinstall, as the installer replaces the patched file (`fix-uris` detects an already-patched bundle and writes nothing). The `protobuf.py` encoder intentionally still writes Field 17.1 in the *plain* form: `docs/schema.proto` documents that sub-message as "LOWERCASE non-encoded URIs" from observed IDE data, so the mismatch is resolved at comparison time by the patch — not by making the tool write a format the IDE itself does not. |
+
+| Community Reports | Author | Source |
+|-------------------|--------|--------|
+| [Conversations not associated with workspace (v2.0.1, Windows)](https://discuss.ai.google.dev/t/bug-v2-0-1-windows-conversations-still-not-associated-with-workspace/166926) | Various | Google Dev Forum |
+| [Fix: Conversations disappear from sidebar (Windows)](https://discuss.ai.google.dev/t/bug-fix-conversations-disappear-from-the-sidebar-windows/168613) | Various | Google Dev Forum |
+
+---
+
 ## Technical Root Cause
 
-All 11 bugs stem from the same fundamental architectural flaw: the IDE's failure to atomically manage its three internal state stores:
+Eleven of the 12 bugs stem from the same fundamental architectural flaw: the IDE's failure to atomically manage its three internal state stores (Bug #12 is the exception — a frontend encoding-comparison defect rather than an atomicity failure):
 
 1. **`chat.ChatSessionStore.index`** (JSON) — Gets reset to `{"version":1,"entries":{}}` on failure
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — Loses UUID-to-conversation mappings

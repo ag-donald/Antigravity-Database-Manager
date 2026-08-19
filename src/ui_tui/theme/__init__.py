@@ -18,16 +18,10 @@ from .palette import (
 )
 
 # Box-drawing borders
-from .borders import (
-    BoxChars,
-    BORDER_THIN, BORDER_THICK, BORDER_DOUBLE, BORDER_ROUNDED, BORDER_NONE,
-)
+from .borders import BoxChars, BORDER_ROUNDED
 
 # Icons and glyphs
 from .icons import Icons, Glyphs
-
-# Gradient utilities
-from .gradients import generate_gradient, gradient_bg_line, contrast_ratio_approx
 
 __all__ = [
     # Color
@@ -38,10 +32,7 @@ __all__ = [
     "Palette", "PaletteHighContrast", "PaletteLight",
     "PALETTE", "Styles", "STYLES",
     # Borders
-    "BoxChars",
-    "BORDER_THIN", "BORDER_THICK", "BORDER_DOUBLE", "BORDER_ROUNDED", "BORDER_NONE",
+    "BoxChars", "BORDER_ROUNDED",
     # Icons
     "Icons", "Glyphs",
-    # Gradients
-    "generate_gradient", "gradient_bg_line", "contrast_ratio_approx",
 ]

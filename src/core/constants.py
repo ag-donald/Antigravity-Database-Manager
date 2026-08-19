@@ -9,8 +9,7 @@ from __future__ import annotations
 # ==============================================================================
 VERSION = "8.7.0"
 APP_NAME = "Agmercium Antigravity IDE DB Manager"
-TOOL_NAME = "Agmercium Antigravity IDE Recovery Tool"
-AGMERCIUM_URL = "https://www.agmercium.com"
+AGMERCIUM_URL = "https://agmercium.com"
 
 # ==============================================================================
 # DATABASE SETTINGS
@@ -23,7 +22,10 @@ MIN_PYTHON_VERSION = (3, 10)
 # TUNING PARAMETERS
 # ==============================================================================
 BACKUP_PREFIX = "agmercium_recovery"
-UUID_PATTERN = rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+# Prefix of auto-generated fallback titles; db_scanner treats titles starting
+# with this as placeholders (they round-trip instead of masking real titles).
+PLACEHOLDER_TITLE_PREFIX = "Conversation"
 
 # ==============================================================================
 # DATABASE KEYS

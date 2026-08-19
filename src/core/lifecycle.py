@@ -6,19 +6,18 @@ handling:
   - Python version validation
   - Database path resolution and permission checks
   - Signal registration (SIGINT / SIGTERM)
-  - Guaranteed terminal and temporary-file cleanup via atexit
+  - Guaranteed terminal cleanup via atexit
 """
 
 from __future__ import annotations
 
 import atexit
-import glob
 import os
 import signal
 import sys
 from typing import Optional, Callable
 
-from .constants import VERSION, APP_NAME, MIN_PYTHON_VERSION, DB_FILENAME
+from .constants import VERSION, APP_NAME, MIN_PYTHON_VERSION
 from .environment import EnvironmentResolver
 
 
@@ -136,7 +135,7 @@ class ApplicationContext:
         atexit.register(self._teardown)
 
     def _teardown(self) -> None:
-        """Guaranteed cleanup: restore terminal, delete orphan .tmp files."""
+        """Guaranteed cleanup: restore terminal and signal handlers."""
         # 1. Restore terminal state (TUI only)
         if self._tui_cleanup_fn:
             try:
@@ -159,19 +158,3 @@ class ApplicationContext:
             except Exception:
                 pass
             self._original_sigterm = None
-
-        # 3. Clean up orphaned .tmp files
-        if self.db_path:
-            self._cleanup_tmp_files()
-
-    def _cleanup_tmp_files(self) -> None:
-        """Delete any .tmp files left by interrupted atomic writes."""
-        db_dir = os.path.dirname(self.db_path)
-        if not db_dir or not os.path.isdir(db_dir):
-            return
-        pattern = os.path.join(db_dir, f"{DB_FILENAME}.tmp*")
-        for tmp_file in glob.glob(pattern):
-            try:
-                os.remove(tmp_file)
-            except OSError:
-                pass

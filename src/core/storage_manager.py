@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import time
 from typing import Any
 
-from .constants import STORAGE_FILENAME, BACKUP_PREFIX
+from .constants import STORAGE_FILENAME
+from .db_operations import create_backup
 from .models import StorageEntry
 
 
@@ -47,10 +46,9 @@ def write_storage(user_data_dir: str, data: dict[str, Any], reason: str = "manua
     Returns the backup file path.
     """
     path = _storage_path(user_data_dir)
-    backup_path = f"{path}.{BACKUP_PREFIX}_{int(time.time())}_{reason}"
-
+    backup_path = ""
     if os.path.isfile(path):
-        shutil.copy2(path, backup_path)
+        backup_path = create_backup(path, reason=reason)
 
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -110,7 +108,6 @@ def patch_key(data: dict[str, Any], json_path: str, value: Any) -> dict[str, Any
     # Coerce string values to their native JSON types when possible
     if isinstance(value, str):
         try:
-            import json
             parsed = json.loads(value)
             # Only coerce scalars, not dicts/lists (which would be surprising)
             if isinstance(parsed, (bool, int, float)) or parsed is None:

@@ -78,6 +78,14 @@ class ProtobufEncoder:
         """
         Constructs the deeply nested Field 17 workspace URI parameters.
         Schema: Field 17 { Field 1 { Field 1: uri, Field 2: uri }, Field 2 { Field 1: seconds, Field 2: nanos }, Field 3: session_uuid, Field 7: uri_encoded }
+
+        Note: The Field 17.1 sub-message deliberately uses ``uri_plain``
+        while Field 17.7 uses ``uri_encoded`` — this mirrors the IDE's own
+        observed wire format (docs/schema.proto, ``SessionWorkspace``:
+        "Uses LOWERCASE non-encoded URIs"). Do not make these uniform to
+        address the Bug #12 dialog; that mismatch is fixed at comparison
+        time by ``src/core/uri_fix.py``, not by changing what the encoder
+        writes.
         """
         sub1_inner = (
             cls.write_string_field(1, ws["uri_plain"])

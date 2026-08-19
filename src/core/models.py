@@ -7,7 +7,7 @@ All models are frozen dataclasses — immutable value objects with no side effec
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Any
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -17,9 +17,22 @@ class ConversationEntry:
     title: str
     workspace_uri: str
     has_timestamps: bool
-    modified_epoch: int
     json_synced: bool
     is_stale: bool
+
+
+@dataclass(frozen=True)
+class OpResult:
+    """Boolean-like outcome of a single write operation.
+
+    Truthiness mirrors ``success`` so existing ``if op(...)`` call sites keep
+    working, while ``error`` carries the reason for a failure.
+    """
+    success: bool
+    error: str = ""
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 @dataclass(frozen=True)
@@ -132,5 +145,42 @@ class RepairResult:
     ghost_bytes_stripped: int = 0
     double_wraps_fixed: int = 0
     uuid_mismatches_fixed: int = 0
+    backup_path: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class UriNormalizeResult:
+    """Result of the Bug #12 workspace-URI normalization of state.vscdb."""
+    success: bool
+    db_path: str = ""
+    entries_seen: int = 0
+    entries_changed: int = 0
+    entries_preserved_unparsed: int = 0
+    wrote: bool = False
+    backup_path: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class IdePatchResult:
+    """Result of patching workbench.desktop.main.js for Bug #12."""
+    success: bool
+    js_path: str = ""
+    patches_applied: tuple[str, ...] = ()
+    patches_present: tuple[str, ...] = ()
+    patches_missing: tuple[str, ...] = ()
+    normalizer_upgraded: bool = False
+    wrote: bool = False
+    backup_path: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ProductChecksumResult:
+    """Result of refreshing the workbench bundle checksum in product.json."""
+    success: bool
+    updated: bool = False
+    note: str = ""
     backup_path: str = ""
     error: Optional[str] = None

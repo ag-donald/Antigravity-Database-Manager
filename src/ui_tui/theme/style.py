@@ -64,30 +64,3 @@ class Style:
             parts.append(_Ansi.REVERSE)
         return "".join(parts)
 
-    def merge(self, other: "Style") -> "Style":
-        """
-        Merge another style on top of this one (other takes precedence).
-
-        UX Best Practice: Cascading styles enable inheritance patterns
-        similar to CSS, reducing visual inconsistency.
-        """
-        return Style(
-            fg=other.fg if other.fg else self.fg,
-            bg=other.bg if other.bg else self.bg,
-            bold=other.bold or self.bold,
-            dim=other.dim or self.dim,
-            italic=other.italic or self.italic,
-            underline=other.underline or self.underline,
-            strikethrough=other.strikethrough or self.strikethrough,
-            reverse=other.reverse or self.reverse,
-        )
-
-    @property
-    def prefix(self) -> str:
-        """Raw ANSI prefix (for manual use where apply() isn't suitable)."""
-        return self._build_prefix()
-
-    @property
-    def reset(self) -> str:
-        """ANSI reset sequence."""
-        return _Ansi.RESET
