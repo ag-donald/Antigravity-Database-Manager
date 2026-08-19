@@ -211,7 +211,7 @@ Raw conversation data is resolved the same way on all platforms: the modern `~/.
 
 - **Python:** 3.10+
 - **Dependencies:** None (standard library only)
-- **Current version:** 8.7.0
+- **Current version:** 8.8.0
 
 ---
 
