@@ -6,17 +6,15 @@ Provides production-grade terminal management:
   - VT100/ANSI sequence emission
   - Alternate Screen Buffer management
   - Cursor visibility control
-  - Terminal size detection with resize events
+  - Terminal size detection
   - Double-buffered rendering with dirty-region diffing
   - Non-blocking input with timeout for animation loops
-  - Frame timing with adaptive FPS
   - Guaranteed cleanup via atexit integration
 
 UX Best Practices enforced:
   - Double buffering eliminates visual flicker
   - Dirty-region rendering reduces CPU usage and prevents tearing
   - Non-blocking input enables smooth animations without freezing
-  - Adaptive FPS saves CPU when idle, provides smooth motion when animating
 """
 
 from __future__ import annotations
@@ -24,6 +22,7 @@ from __future__ import annotations
 import enum
 import os
 import re
+import subprocess
 import sys
 import time
 from typing import Optional
@@ -102,7 +101,6 @@ class TerminalEngine:
     Features:
       - Double-buffered rendering with line-level diffing
       - Non-blocking keyboard input with configurable timeout
-      - Adaptive frame timing (high FPS during animations, low when idle)
       - Full VT100/ANSI sequence support
 
     UX Best Practice: Double buffering and diff-based rendering prevent
@@ -123,18 +121,11 @@ class TerminalEngine:
             engine.exit_fullscreen()
     """
 
-    # Target FPS settings
-    FPS_ACTIVE = 30     # During animations
-    FPS_IDLE = 5        # When idle (just checking for resize etc.)
-    FPS_MAX = 60        # Hard cap — never exceed this
-
     def __init__(self) -> None:
         self._in_fullscreen = False
         self._old_termios: Optional[list] = None
         self._prev_frame: list[str] = []
         self._last_size: tuple[int, int] = (0, 0)
-        self._frame_count: int = 0
-        self._last_frame_time: float = 0.0
 
     # ------------------------------------------------------------------
     # VT100 ANSI Sequences
@@ -144,34 +135,6 @@ class TerminalEngine:
     def _write(seq: str) -> None:
         """Write an escape sequence to stdout and flush immediately."""
         sys.stdout.write(seq)
-        sys.stdout.flush()
-
-    @staticmethod
-    def set_cursor_pos(row: int, col: int) -> None:
-        """Move cursor to (row, col) — 1-indexed."""
-        sys.stdout.write(f"\x1b[{row};{col}H")
-
-    @staticmethod
-    def clear_line() -> None:
-        """Clear the current line from cursor to end."""
-        sys.stdout.write("\x1b[K")
-
-    @staticmethod
-    def clear_screen() -> None:
-        """Clear the entire screen."""
-        sys.stdout.write("\x1b[2J\x1b[H")
-        sys.stdout.flush()
-
-    @staticmethod
-    def show_cursor() -> None:
-        """Make the cursor visible."""
-        sys.stdout.write("\x1b[?25h")
-        sys.stdout.flush()
-
-    @staticmethod
-    def hide_cursor() -> None:
-        """Make the cursor invisible."""
-        sys.stdout.write("\x1b[?25l")
         sys.stdout.flush()
 
     @staticmethod
@@ -285,11 +248,6 @@ class TerminalEngine:
             i += 1
         return s[:i]
 
-    @classmethod
-    def _strip_ansi(cls, s: str) -> str:
-        """Remove all ANSI escape sequences."""
-        return cls._ANSI_RE.sub("", s)
-
     # ------------------------------------------------------------------
     # Double-Buffered Rendering
     # ------------------------------------------------------------------
@@ -308,15 +266,14 @@ class TerminalEngine:
         buf: list[str] = []
         full_repaint = len(self._prev_frame) != rows
 
+        new_frame: list[str] = []
         for i in range(rows):
             if i < len(lines):
-                line = lines[i].rstrip("\n")
-                line = self._truncate_visible(line, cols)
-                vis = self._visible_len(line)
-                padding = max(0, cols - vis)
-                rendered = line + " " * padding
+                line = self._truncate_visible(lines[i].rstrip("\n"), cols)
+                rendered = line + " " * max(0, cols - self._visible_len(line))
             else:
                 rendered = " " * cols
+            new_frame.append(rendered)
 
             # Only emit if this line changed (or on full repaint)
             if full_repaint or i >= len(self._prev_frame) or self._prev_frame[i] != rendered:
@@ -327,21 +284,8 @@ class TerminalEngine:
             sys.stdout.write("".join(buf))
             sys.stdout.flush()
 
-        # Store current frame as reference for next diff
-        new_frame: list[str] = []
-        for i in range(rows):
-            if i < len(lines):
-                line = lines[i].rstrip("\n")
-                line = self._truncate_visible(line, cols)
-                vis = self._visible_len(line)
-                padding = max(0, cols - vis)
-                new_frame.append(line + " " * padding)
-            else:
-                new_frame.append(" " * cols)
+        # Reference frame for the next diff
         self._prev_frame = new_frame
-
-        self._frame_count += 1
-        self._last_frame_time = time.monotonic()
 
     def invalidate(self) -> None:
         """Force a full repaint on the next paint() call."""
@@ -401,23 +345,6 @@ class TerminalEngine:
         if ready:
             return self._getch_posix()
         return None
-
-    # ------------------------------------------------------------------
-    # Frame Timing
-    # ------------------------------------------------------------------
-
-    def frame_delay(self, animating: bool = False) -> float:
-        """
-        Calculate the ideal delay before the next frame.
-
-        UX Best Practice: Adaptive frame rate — fast during animations
-        for smoothness, slow when idle to save CPU.
-        """
-        fps = self.FPS_ACTIVE if animating else self.FPS_IDLE
-        fps = min(fps, self.FPS_MAX)  # Hard 60 FPS cap
-        target_interval = 1.0 / fps
-        elapsed = time.monotonic() - self._last_frame_time
-        return max(0.0, target_interval - elapsed)
 
     # ------------------------------------------------------------------
     # Internal: Platform Keyboard Implementations
@@ -576,7 +503,6 @@ def clipboard_write(text: str) -> bool:
     UX Best Practice: Copy-to-clipboard is essential for UUID sharing
     and reduces manual transcription errors.
     """
-    import subprocess
     try:
         if sys.platform == "win32":
             p = subprocess.Popen(["clip.exe"], stdin=subprocess.PIPE)

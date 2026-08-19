@@ -10,20 +10,26 @@ import argparse
 import json
 import os
 import sys
-from typing import Optional
 
-from ..core.constants import VERSION, TOOL_NAME
+from ..core.constants import VERSION, APP_NAME
 from ..core.lifecycle import ApplicationContext
 from ..core import db_operations as ops
-from ..core.db_scanner import scan_all, format_snapshot_table, list_conversations, health_check, analyze_workspaces
+from ..core import uri_fix
+from ..core.db_scanner import (
+    scan_all, format_snapshot_table, list_conversations, health_check,
+    analyze_workspaces, summarize_workspace_health,
+)
+from ..core.diagnostic import diagnose_database
+from ..core.environment import EnvironmentResolver
 from ..core import storage_manager as sm
+from .logger import Logger
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Construct the full argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
         prog="antigravity_database_manager",
-        description=f"{TOOL_NAME} v{VERSION} — Agmercium Database Management Hub",
+        description=f"{APP_NAME} v{VERSION} — Agmercium Database Management Hub",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -37,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  antigravity_database_manager.py fix-uris --dry-run\n"
         ),
     )
-    parser.add_argument("--version", "-v", action="version", version=f"{TOOL_NAME} v{VERSION}")
+    parser.add_argument("--version", "-v", action="version", version=f"{APP_NAME} v{VERSION}")
     parser.add_argument("--headless", action="store_true",
                         help="Force headless interactive mode (no TUI)")
     parser.add_argument("--json", action="store_true",
@@ -212,7 +218,6 @@ def _cmd_scan(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_recover(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     use_json = getattr(args, "json", False)
     if not use_json:
         Logger.banner()
@@ -221,8 +226,7 @@ def _cmd_recover(args: argparse.Namespace, ctx: ApplicationContext) -> int:
         on_progress=lambda phase, msg: (Logger.info(f"[{phase}] {msg}") if not use_json else None),
     )
     if use_json:
-        import json as _json
-        print(_json.dumps({
+        print(json.dumps({
             "success": result.success,
             "conversations_rebuilt": result.conversations_rebuilt,
             "workspaces_mapped": result.workspaces_mapped,
@@ -235,14 +239,7 @@ def _cmd_recover(args: argparse.Namespace, ctx: ApplicationContext) -> int:
         }, indent=2))
         return 0 if result.success else 1
     if result.success:
-        Logger.header("Recovery Complete")
-        Logger.success(f"Conversations rebuilt:  {result.conversations_rebuilt}")
-        Logger.success(f"Workspaces mapped:     {result.workspaces_mapped}")
-        Logger.success(f"Timestamps injected:   {result.timestamps_injected}")
-        Logger.success(f"JSON entries added:    {result.json_added}")
-        Logger.success(f"JSON entries patched:  {result.json_patched}")
-        Logger.success(f"JSON entries deleted:  {result.json_deleted}")
-        Logger.info(f"Backup at: {result.backup_path}")
+        Logger.recovery_summary(result)
         return 0
     else:
         Logger.error(f"Recovery failed: {result.error}")
@@ -250,7 +247,6 @@ def _cmd_recover(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_merge(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     cherry = getattr(args, "cherry_pick", "")
     if cherry:
         uuids = [u.strip() for u in cherry.split(",") if u.strip()]
@@ -258,8 +254,7 @@ def _cmd_merge(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     else:
         result = ops.execute_merge(args.source, ctx.db_path, args.strategy)
     if result.success:
-        Logger.success(f"Merge complete: +{result.added} added, ~{result.updated} updated, ={result.skipped} skipped")
-        Logger.info(f"Backup at: {result.backup_path}")
+        Logger.merge_summary(result)
         return 0
     else:
         Logger.error(f"Merge failed: {result.error}")
@@ -267,7 +262,6 @@ def _cmd_merge(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_backup(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     action = getattr(args, "backup_action", None)
 
     if action == "list":
@@ -300,17 +294,15 @@ def _cmd_backup(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_create(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
-    if ops.create_empty_db(args.output):
+    result = ops.create_empty_db(args.output)
+    if result:
         Logger.success(f"Created empty database: {args.output}")
         return 0
-    else:
-        Logger.error("Failed to create database.")
-        return 1
+    Logger.error(f"Failed to create database: {result.error}")
+    return 1
 
 
 def _cmd_health(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     snapshots = scan_all(ctx.db_path)
     if not snapshots:
         Logger.error("No database found.")
@@ -344,7 +336,6 @@ def _cmd_health(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_conversations(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     action = getattr(args, "conv_action", None)
     
     if action == "list":
@@ -373,17 +364,19 @@ def _cmd_conversations(args: argparse.Namespace, ctx: ApplicationContext) -> int
                     return 0
             except (KeyboardInterrupt, EOFError):
                 return 0
-        if ops.delete_conversation(ctx.db_path, args.uuid):
+        result = ops.delete_conversation(ctx.db_path, args.uuid)
+        if result:
             Logger.success(f"Conversation {args.uuid} deleted.")
             return 0
-        Logger.error(f"Failed to delete {args.uuid}.")
+        Logger.error(f"Failed to delete {args.uuid}: {result.error}")
         return 1
         
     elif action == "rename":
-        if ops.rename_conversation(ctx.db_path, args.uuid, args.title):
+        result = ops.rename_conversation(ctx.db_path, args.uuid, args.title)
+        if result:
             Logger.success(f"Conversation renamed to '{args.title}'.")
             return 0
-        Logger.error(f"Failed to rename {args.uuid}.")
+        Logger.error(f"Failed to rename {args.uuid}: {result.error}")
         return 1
         
     else:
@@ -392,7 +385,6 @@ def _cmd_conversations(args: argparse.Namespace, ctx: ApplicationContext) -> int
 
 
 def _cmd_workspace(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     action = getattr(args, "ws_action", None)
 
     if action == "list":
@@ -412,11 +404,12 @@ def _cmd_workspace(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
     elif action == "check":
         diagnostics = analyze_workspaces(ctx.db_path)
-        healthy = sum(1 for d in diagnostics if d.exists_on_disk and d.is_accessible)
-        missing = sum(1 for d in diagnostics if not d.exists_on_disk)
+        healthy, warn, missing = summarize_workspace_health(diagnostics)
         Logger.header("Workspace Diagnostics")
         Logger.info(f"Total workspaces: {len(diagnostics)}")
         Logger.info(f"Healthy: {healthy}")
+        if warn:
+            Logger.warn(f"Inaccessible: {warn}")
         if missing:
             Logger.warn(f"Missing: {missing}")
             for d in diagnostics:
@@ -427,10 +420,11 @@ def _cmd_workspace(args: argparse.Namespace, ctx: ApplicationContext) -> int:
         return 0
 
     elif action == "migrate":
-        if ops.migrate_workspace(ctx.db_path, args.path):
+        result = ops.migrate_workspace(ctx.db_path, args.path)
+        if result:
             Logger.success(f"Successfully migrated workspace to '{args.path}'.")
             return 0
-        Logger.error("Failed to migrate workspace.")
+        Logger.error(f"Failed to migrate workspace: {result.error}")
         return 1
 
     else:
@@ -439,7 +433,6 @@ def _cmd_workspace(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_storage(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
     action = getattr(args, "storage_action", None)
     storage_dir = os.path.dirname(ctx.db_path)
 
@@ -457,7 +450,10 @@ def _cmd_storage(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     elif action == "backup":
         data = sm.read_storage(storage_dir)
         bp = sm.write_storage(storage_dir, data, reason="cli_backup")
-        Logger.success(f"Storage backup: {bp}")
+        if bp:
+            Logger.success(f"Storage backup: {bp}")
+        else:
+            Logger.warn("No storage.json found to back up (wrote a fresh one).")
         return 0
 
     elif action == "patch":
@@ -488,8 +484,6 @@ def _cmd_storage(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_diagnose(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
-    from ..core.diagnostic import diagnose_database
 
     target = getattr(args, "target", "") or ctx.db_path
     Logger.header("Database Corruption Diagnostic")
@@ -536,7 +530,6 @@ def _cmd_diagnose(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_repair(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
 
     target = getattr(args, "target", "") or ctx.db_path
     Logger.header("Autonomous Database Repair")
@@ -565,9 +558,6 @@ def _cmd_repair(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_fix_uris(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    from .logger import Logger
-    from ..core import uri_fix
-    from ..core.environment import EnvironmentResolver
 
     dry_run = getattr(args, "dry_run", False)
     do_js = not getattr(args, "no_js", False)

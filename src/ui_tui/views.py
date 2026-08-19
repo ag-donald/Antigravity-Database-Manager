@@ -12,17 +12,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .engine import Key, KeyEvent, clipboard_write
-from .theme import Style, STYLES, PALETTE, Icons, BORDER_ROUNDED, _Ansi, Glyphs
-from .core import (
-    visible_len, truncate, pad, pad_center, styled_line, horizontal_rule, Component,
-)
+from .theme import STYLES, Icons
+from .core import truncate, pad
 from .components import (
-    Header, StatusBar, DataTable, TableColumn, TreeView, TreeNode,
-    TextInput, TextViewer, Modal, ConfirmDialog, ActionMenu,
-    ProgressBar, Spinner, ToastManager, Tabs, Breadcrumb,
-    SearchBar, Badge, SplitPane, ScrollView, WizardPipeline,
-    Gauge, BarChart, KeyValueGrid, Separator, NotificationBanner,
-    overlay_on,
+    Header, StatusBar, TextViewer, Modal, ConfirmDialog, ActionMenu,
+    Spinner, WizardPipeline, overlay_on,
 )
 from ..core.constants import VERSION, APP_NAME
 from ..core.models import (
@@ -78,6 +72,29 @@ def _render_detail_panel(title: str, rows_data: list[tuple[str, str]],
         label = pad(f"  {key}:", max_label + 3)
         lines.append(STYLES.muted.apply(label) + STYLES.body.apply(f" {value}"))
     return lines
+
+
+def _compose_split(lines: list[str], left: list[str], right: list[str],
+                   cols: int, main_h: int) -> None:
+    """Compose two pre-rendered panes side by side into ``lines``."""
+    lw = int(cols * 0.55)
+    rw = cols - lw - 1
+    while len(left) < main_h:
+        left.append(" " * lw)
+    while len(right) < main_h:
+        right.append(" " * rw)
+    sep = STYLES.dim.apply("│")
+    for i in range(main_h):
+        lines.append(pad(truncate(left[i], lw), lw) + sep + pad(truncate(right[i], rw), rw))
+
+
+def _clamp_scroll(selected: int, scroll: int, visible_h: int) -> int:
+    """Clamp a scroll offset so the selected row stays visible."""
+    if selected < scroll:
+        return selected
+    if selected >= scroll + visible_h:
+        return selected - visible_h + 1
+    return scroll
 
 
 # ==============================================================================
@@ -213,8 +230,8 @@ class HomeView:
                 try:
                     os.remove(cur_snap.path)
                     self.set_status(f"{Icons.CHECK} Deleted")
-                except Exception:
-                    self.set_status(f"{Icons.CROSS} Error", "error")
+                except OSError as exc:
+                    self.set_status(f"{Icons.CROSS} Delete failed: {exc}", "error")
                 self.m.overlay = "none"
                 self._refresh()
             elif key.char.lower() == "n" or key.key == Key.ESCAPE:
@@ -288,19 +305,7 @@ class HomeView:
             rep = self.m.reports.get(snap.path)
             right = self._render_detail(snap, rep, cols - int(cols * 0.55) - 1)
 
-        pane = SplitPane()
-        lw = int(cols * 0.55)
-        rw = cols - lw - 1
-        # Manual composition since we have pre-rendered lines
-        while len(left) < main_h:
-            left.append(" " * lw)
-        while len(right) < main_h:
-            right.append(" " * rw)
-        sep = STYLES.dim.apply("│")
-        for i in range(main_h):
-            l = pad(truncate(left[i] if i < len(left) else "", lw), lw)
-            r = pad(truncate(right[i] if i < len(right) else "", rw), rw)
-            lines.append(l + sep + r)
+        _compose_split(lines, left, right, cols, main_h)
 
         # Overlays
         cur_snap = self.m.snapshots[self.m.selected] if self.m.snapshots else None
@@ -356,17 +361,14 @@ class HomeView:
 
             if real_i == self.m.selected:
                 prefix = STYLES.cursor.apply(f" {Icons.POINTER} ")
-                lines.append(prefix + STYLES.table_sel.apply(pad(row, w - 3)))
+                lines.append(prefix + STYLES.selected.apply(pad(row, w - 3)))
             else:
                 lines.append("   " + STYLES.body.apply(pad(row, w - 3)))
 
         return lines
 
     def _sync_scroll(self, visible_h: int) -> None:
-        if self.m.selected < self.m.scroll:
-            self.m.scroll = self.m.selected
-        elif self.m.selected >= self.m.scroll + visible_h:
-            self.m.scroll = self.m.selected - visible_h + 1
+        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, visible_h)
 
     def _render_detail(self, snap: DatabaseSnapshot, report: HealthReport | None,
                        w: int) -> list[str]:
@@ -525,11 +527,7 @@ class ConversationBrowserView:
                 self.m.status_severity = "error"
 
         # Keep scroll in sync
-        visible_h = max(1, 20)
-        if self.m.selected < self.m.scroll:
-            self.m.scroll = self.m.selected
-        elif self.m.selected >= self.m.scroll + visible_h:
-            self.m.scroll = self.m.selected - visible_h + 1
+        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, visible_h=20)
 
         return None
 
@@ -541,17 +539,7 @@ class ConversationBrowserView:
         cur_conv = self.m.filtered[self.m.selected] if self.m.filtered else None
         right = self._render_conv_detail(cur_conv, cols - int(cols * 0.55) - 1)
 
-        lw = int(cols * 0.55)
-        rw = cols - lw - 1
-        while len(left) < main_h:
-            left.append(" " * lw)
-        while len(right) < main_h:
-            right.append(" " * rw)
-        sep = STYLES.dim.apply("│")
-        for i in range(main_h):
-            l = pad(truncate(left[i], lw), lw)
-            r = pad(truncate(right[i], rw), rw)
-            lines.append(l + sep + r)
+        _compose_split(lines, left, right, cols, main_h)
 
         if cur_conv:
             if self.m.overlay == "action_menu":
@@ -589,7 +577,7 @@ class ConversationBrowserView:
             title = truncate(c.title, title_w)
             if real_i == self.m.selected:
                 prefix = STYLES.cursor.apply(f" {Icons.POINTER} ")
-                lines.append(prefix + STYLES.table_sel.apply(pad(f"{real_i:>3}  {title}", w - 3)))
+                lines.append(prefix + STYLES.selected.apply(pad(f"{real_i:>3}  {title}", w - 3)))
             else:
                 lines.append("   " + STYLES.body.apply(pad(f"{real_i:>3}  {title}", w - 3)))
         return lines
@@ -617,7 +605,6 @@ class ConversationBrowserView:
 class DataViewModel:
     payload_lines: list[str] = field(default_factory=list)
     scroll: int = 0
-    uuid: str = ""
 
 
 class ConversationDataView:
@@ -629,7 +616,6 @@ class ConversationDataView:
         self.m = DataViewModel()
 
     def on_enter(self) -> None:
-        self.m.uuid = self.uuid
         raw = ops.get_conversation_payload(self.db_path, self.uuid)
         self.m.payload_lines = raw.split("\n")
 
@@ -803,14 +789,14 @@ class MergeWizardView:
         self.m.step = "diff_preview"
         self.m.cursor = 0
 
-    def _all_entries(self) -> list[tuple[str, str]]:
+    def _all_entries(self) -> list[tuple[str, str, str]]:
         if not self.m.diff:
             return []
-        entries: list[tuple[str, str]] = []
+        entries: list[tuple[str, str, str]] = []
         for e in self.m.diff.source_only_entries:
-            entries.append((e.uuid, e.title))
+            entries.append((e.uuid, e.title, "new"))
         for src_e, tgt_e in self.m.diff.shared_entries:
-            entries.append((src_e.uuid, src_e.title))
+            entries.append((src_e.uuid, src_e.title, "shared"))
         return entries
 
     def update(self, key: KeyEvent) -> Optional[str]:
@@ -934,11 +920,7 @@ class MergeWizardView:
             STYLES.dim.apply("─" * w),
         ]
 
-        entries: list[tuple[str, str, str]] = []
-        for e in diff.source_only_entries:
-            entries.append((e.uuid, e.title, "new"))
-        for src_e, tgt_e in diff.shared_entries:
-            entries.append((src_e.uuid, src_e.title, "shared"))
+        entries = self._all_entries()
 
         for idx, (uid, title, kind) in enumerate(entries[:h - 3]):
             check = STYLES.success.apply(f"[{Icons.CHECK}]") if uid in self.m.selected_uuids else STYLES.dim.apply("[ ]")
@@ -995,17 +977,7 @@ class WorkspaceBrowserView:
             diag = self.m.diagnostics[self.m.selected] if self.m.diagnostics else None
             right = self._render_ws_detail(diag, cols - int(cols * 0.55) - 1)
 
-        lw = int(cols * 0.55)
-        rw = cols - lw - 1
-        while len(left) < main_h:
-            left.append(" " * lw)
-        while len(right) < main_h:
-            right.append(" " * rw)
-        sep = STYLES.dim.apply("│")
-        for i in range(main_h):
-            l = pad(truncate(left[i], lw), lw)
-            r = pad(truncate(right[i], rw), rw)
-            lines.append(l + sep + r)
+        _compose_split(lines, left, right, cols, main_h)
 
         healthy = sum(1 for d in self.m.diagnostics if d.exists_on_disk and d.is_accessible)
         total = len(self.m.diagnostics)
@@ -1033,7 +1005,7 @@ class WorkspaceBrowserView:
             path_str = truncate(d.decoded_path, w - 10)
             if idx == self.m.selected:
                 prefix = STYLES.cursor.apply(f" {Icons.POINTER} ")
-                lines.append(f"{prefix}{icon} {STYLES.table_sel.apply(pad(path_str, w - 6))}")
+                lines.append(f"{prefix}{icon} {STYLES.selected.apply(pad(path_str, w - 6))}")
             else:
                 lines.append(f"   {icon} {STYLES.body.apply(pad(path_str, w - 6))}")
         return lines
@@ -1139,11 +1111,7 @@ class StorageBrowserView:
             return "back"
 
         # Keep scroll in sync
-        visible_h = max(1, 20)
-        if self.m.selected < self.m.scroll:
-            self.m.scroll = self.m.selected
-        elif self.m.selected >= self.m.scroll + visible_h:
-            self.m.scroll = self.m.selected - visible_h + 1
+        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, visible_h=20)
 
         return None
 
@@ -1159,17 +1127,7 @@ class StorageBrowserView:
             entry = self.m.entries[self.m.selected] if self.m.entries else None
             right = self._render_entry_detail(entry, cols - int(cols * 0.55) - 1)
 
-        lw = int(cols * 0.55)
-        rw = cols - lw - 1
-        while len(left) < main_h:
-            left.append(" " * lw)
-        while len(right) < main_h:
-            right.append(" " * rw)
-        sep = STYLES.dim.apply("│")
-        for i in range(main_h):
-            l = pad(truncate(left[i], lw), lw)
-            r = pad(truncate(right[i], rw), rw)
-            lines.append(l + sep + r)
+        _compose_split(lines, left, right, cols, main_h)
 
         if self.m.overlay == "edit_value":
             modal = Modal(
@@ -1214,7 +1172,7 @@ class StorageBrowserView:
 
             if real_i == self.m.selected:
                 prefix = STYLES.cursor.apply(f" {Icons.POINTER} ")
-                lines.append(f"{prefix}{STYLES.tree_sel.apply(pad(display, w - 3))}")
+                lines.append(f"{prefix}{STYLES.selected.apply(pad(display, w - 3))}")
             else:
                 lines.append(f"   {STYLES.tree_leaf.apply(pad(display, w - 3))}")
         return lines

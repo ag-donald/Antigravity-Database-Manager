@@ -9,10 +9,8 @@ Detected features:
   - Truecolor (24-bit) RGB support
   - 256-color palette support
   - Basic 16-color support
-  - Unicode box-drawing / emoji rendering
-  - Mouse reporting (SGR mode)
-  - Bracketed paste mode
   - Light vs dark background heuristic
+  - Reduced-motion preference
 
 UX Best Practice: Graceful degradation ensures the TUI looks good on
 every terminal — from modern GPU-accelerated emulators to SSH over tmux.
@@ -41,10 +39,6 @@ class TerminalCapabilities:
     truecolor: bool = False       # 24-bit RGB (16 million colors)
     colors_256: bool = False      # 8-bit palette (256 colors)
     colors_basic: bool = True     # 4-bit palette (16 colors) — always available
-    unicode_box: bool = True      # Box-drawing and block-element characters
-    unicode_emoji: bool = False   # Full emoji rendering (🗄📁 etc.)
-    mouse_sgr: bool = False       # SGR mouse event protocol
-    bracketed_paste: bool = False # Bracketed-paste safe input
     light_bg: bool = False        # Terminal has a light background
     reduce_motion: bool = False   # User prefers reduced motion
 
@@ -63,13 +57,9 @@ def detect() -> TerminalCapabilities:
     """
     caps = TerminalCapabilities()
 
-    # --- NO_COLOR convention ---
+    # --- NO_COLOR convention (https://no-color.org): keep the color-off
+    # defaults exactly as constructed ---
     if os.environ.get("NO_COLOR") is not None:
-        caps.truecolor = False
-        caps.colors_256 = False
-        caps.colors_basic = True
-        caps.unicode_box = True
-        caps.unicode_emoji = False
         return caps
 
     # --- Truecolor detection ---
@@ -102,28 +92,6 @@ def detect() -> TerminalCapabilities:
         if sys.platform == "win32":
             caps.colors_256 = True  # Conservative default for Win10+
 
-    # --- Unicode detection ---
-    # Most modern terminals support box-drawing characters
-    caps.unicode_box = True
-    # Emoji support is less universal
-    if caps.truecolor or term_program in truecolor_programs:
-        caps.unicode_emoji = True
-    if sys.platform == "win32" and not os.environ.get("WT_SESSION"):
-        caps.unicode_emoji = False  # Classic conhost has mixed emoji support
-
-    # --- Mouse support ---
-    # SGR mouse is available in most modern terminals
-    if caps.truecolor or term_program in truecolor_programs:
-        caps.mouse_sgr = True
-    if os.environ.get("TERM_PROGRAM") == "Apple_Terminal":
-        caps.mouse_sgr = False  # Apple Terminal has poor mouse support
-    # Disable mouse in screen/tmux by default (they intercept events)
-    if "screen" in term or "tmux" in term:
-        caps.mouse_sgr = False
-
-    # --- Bracketed paste ---
-    caps.bracketed_paste = caps.truecolor or caps.colors_256
-
     # --- Light background heuristic ---
     colorfgbg = os.environ.get("COLORFGBG", "")
     if colorfgbg:
@@ -154,11 +122,3 @@ def detect() -> TerminalCapabilities:
 
 CAPS = detect()
 
-
-def color_mode_label() -> str:
-    """Human-readable label for the current color mode (for debug/status)."""
-    if CAPS.truecolor:
-        return "Truecolor (24-bit)"
-    if CAPS.colors_256:
-        return "256-color"
-    return "Basic (16-color)"

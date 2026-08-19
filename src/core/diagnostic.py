@@ -212,12 +212,12 @@ def diagnose_database(db_path: str) -> DiagnosticReport:
 
     Returns a DiagnosticReport without modifying the database.
     """
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         cur = conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()
-        conn.close()
 
         if not row or not row[0]:
             return DiagnosticReport(
@@ -232,6 +232,9 @@ def diagnose_database(db_path: str) -> DiagnosticReport:
             db_path=db_path, total_entries=0, corrupt_entries=0,
             warning_entries=0, clean_entries=0, error=str(exc),
         )
+    finally:
+        if conn:
+            conn.close()
 
     # Parse each entry from the concatenated protobuf blob
     entry_diagnostics: list[EntryDiagnostic] = []

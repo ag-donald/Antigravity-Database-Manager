@@ -7,7 +7,7 @@ All models are frozen dataclasses — immutable value objects with no side effec
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Any
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -17,9 +17,22 @@ class ConversationEntry:
     title: str
     workspace_uri: str
     has_timestamps: bool
-    modified_epoch: int
     json_synced: bool
     is_stale: bool
+
+
+@dataclass(frozen=True)
+class OpResult:
+    """Boolean-like outcome of a single write operation.
+
+    Truthiness mirrors ``success`` so existing ``if op(...)`` call sites keep
+    working, while ``error`` carries the reason for a failure.
+    """
+    success: bool
+    error: str = ""
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 @dataclass(frozen=True)

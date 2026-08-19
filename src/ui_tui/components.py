@@ -7,23 +7,12 @@ the core Component framework. Every component enforces UX/UI best practices.
 Components:
   - Header          — Gradient-styled application header
   - StatusBar       — Contextual footer with key hints
-  - DataTable       — Scrollable, selectable data table with column headers
-  - TreeView        — Hierarchical tree with expand/collapse
-  - TextInput       — Single-line text input with cursor
   - TextViewer      — Scrollable readonly text pane
   - Modal           — Centered overlay with title and border
   - ConfirmDialog   — Y/N confirmation overlay
   - ActionMenu      — Selectable vertical menu overlay
-  - ProgressBar     — Animated progress indicator
   - Spinner         — Animated activity indicator
   - Toast           — Auto-dismissing notification
-  - Tabs            — Horizontal tab bar
-  - Breadcrumb      — Navigation path indicator
-  - SearchBar       — Inline search input with feedback
-  - Badge           — Inline status/count indicator
-  - Sparkline       — Tiny inline data chart
-  - SplitPane       — Vertical two-pane layout with divider
-  - ScrollView      — Generic scrollable viewport
   - WizardPipeline  — Multi-step progress indicator
 """
 
@@ -31,18 +20,23 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Any, Callable
+from typing import Optional
 
-from .core import (
-    Component, visible_len, truncate, pad, pad_center, pad_right,
-    styled_line, horizontal_rule, Constraint,
-)
+from .core import Component, visible_len, truncate, pad
 from .theme import (
     Style, STYLES, PALETTE, Icons, BoxChars, _Ansi, Glyphs,
-    BORDER_ROUNDED, BORDER_THIN, Color, generate_gradient, gradient_bg_line,
+    BORDER_ROUNDED, Color,
 )
 from .capabilities import CAPS
-from .engine import Key, KeyEvent
+
+
+# Severity -> (icon, style) decoration shared by status and toast rendering.
+_SEVERITY_DECOR: dict[str, tuple[str, Style]] = {
+    "success": (Icons.CHECK, STYLES.success),
+    "warning": (Icons.WARNING, STYLES.warning),
+    "error":   (Icons.CROSS, STYLES.error),
+    "info":    (Icons.INFO, STYLES.info),
+}
 
 
 # ==============================================================================
@@ -61,8 +55,7 @@ class Header(Component):
     """
 
     def __init__(self, app_name: str = "", version: str = "",
-                 subtitle: str = "", component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
+                 subtitle: str = "") -> None:
         self.app_name = app_name
         self.version = version
         self.subtitle = subtitle
@@ -76,13 +69,8 @@ class Header(Component):
             title_text += f"  v{self.version}"
 
         if CAPS.truecolor and not CAPS.reduce_motion:
-            # Premium gradient rendering: gradient background + gradient text
-            bg_bar = gradient_bg_line(width, PALETTE.gradient_start, PALETTE.gradient_end)
-            # Overlay bold white text on the gradient background
+            # Premium gradient rendering: per-character gradient background
             title_padded = pad(title_text, width)
-            prefix = f"{_Ansi.BOLD}{PALETTE.text_bright.fg()}"
-            line1 = bg_bar[:0] + prefix + title_padded + _Ansi.RESET
-            # Re-render properly: bg gradient per character with text
             parts: list[str] = []
             n = max(width - 1, 1)
             for i, ch in enumerate(title_padded):
@@ -139,9 +127,7 @@ class StatusBar(Component):
     """
 
     def __init__(self, hints: Optional[list[tuple[str, str]]] = None,
-                 status: str = "", status_severity: str = "info",
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
+                 status: str = "", status_severity: str = "info") -> None:
         self.hints = hints or []
         self.status = status
         self.status_severity = status_severity
@@ -158,12 +144,10 @@ class StatusBar(Component):
         # Build status with severity color
         status_str = ""
         if self.status:
-            severity_style = {
-                "success": STYLES.success,
-                "warning": STYLES.warning,
-                "error":   STYLES.error,
-                "info":    STYLES.info,
-            }.get(self.status_severity, STYLES.muted)
+            severity_style = (
+                _SEVERITY_DECOR[self.status_severity][1]
+                if self.status_severity in _SEVERITY_DECOR else STYLES.muted
+            )
             status_str = (
                 STYLES.footer.apply(" │ ")
                 + severity_style.apply(self.status)
@@ -176,334 +160,6 @@ class StatusBar(Component):
         while len(lines) < height:
             lines.append(" " * width)
         return lines[:height]
-
-
-# ==============================================================================
-# DATA TABLE — Enterprise-Grade Scrollable Table
-# ==============================================================================
-
-@dataclass
-class TableColumn:
-    """Definition of a table column."""
-    header: str
-    width: Optional[int] = None      # Fixed width; None = auto
-    min_width: int = 4
-    align: str = "left"              # "left", "right", "center"
-    key: str = ""                    # Data key for row lookup
-
-
-class DataTable(Component):
-    """
-    Scrollable, selectable data table with column headers.
-
-    UX Best Practices enforced:
-      - Column headers provide context for data (scannability)
-      - Selected row is clearly highlighted with accent color
-      - Scroll indicator (arrow prefix) shows current position
-      - Alternating row styles reduce tracking errors on wide tables
-      - Page up/down for fast navigation through large datasets
-      - Empty state message prevents confusion
-    """
-
-    def __init__(
-        self,
-        columns: Optional[list[TableColumn]] = None,
-        rows: Optional[list[list[str]]] = None,
-        selected: int = 0,
-        scroll: int = 0,
-        show_index: bool = True,
-        show_header: bool = True,
-        empty_message: str = "No data available.",
-        component_id: Optional[str] = None,
-    ) -> None:
-        super().__init__(component_id=component_id, focusable=True)
-        self.columns = columns or []
-        self.rows = rows or []
-        self.selected = selected
-        self.scroll = scroll
-        self.show_index = show_index
-        self.show_header = show_header
-        self.empty_message = empty_message
-
-    def render(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-
-        if not self.rows:
-            # Empty state — centered message
-            lines.append(STYLES.muted.apply(pad(f"  {self.empty_message}", width)))
-            while len(lines) < height:
-                lines.append(" " * width)
-            return lines[:height]
-
-        # Calculate column widths
-        col_widths = self._calculate_widths(width)
-
-        # Header
-        if self.show_header:
-            lines.append(STYLES.dim.apply("─" * width))
-            header_parts: list[str] = []
-            if self.show_index:
-                header_parts.append(STYLES.table_header.apply(pad_right("#", 4)))
-            for col, cw in zip(self.columns, col_widths):
-                header_parts.append(STYLES.table_header.apply(pad(f" {col.header}", cw)))
-            header_line = "".join(header_parts)
-            lines.append(pad(header_line, width))
-            lines.append(STYLES.dim.apply("─" * width))
-
-        # Data rows
-        data_height = height - (3 if self.show_header else 0)
-        self._sync_scroll(data_height)
-
-        visible_rows = self.rows[self.scroll:self.scroll + data_height]
-        for idx, row in enumerate(visible_rows):
-            real_idx = idx + self.scroll
-            is_selected = (real_idx == self.selected)
-
-            # Build row content
-            parts: list[str] = []
-            if self.show_index:
-                index_text = f"{real_idx:>3} "
-                parts.append(index_text)
-
-            for col_idx, cw in enumerate(col_widths):
-                cell = row[col_idx] if col_idx < len(row) else ""
-                cell_text = truncate(f" {cell}", cw)
-                parts.append(pad(cell_text, cw))
-
-            row_text = "".join(parts)
-
-            if is_selected:
-                prefix = STYLES.cursor.apply(f" {Icons.POINTER} ")
-                row_content = prefix + STYLES.table_sel.apply(
-                    pad(truncate(row_text, width - 3), width - 3)
-                )
-            else:
-                row_style = STYLES.table_row if (real_idx % 2 == 0) else STYLES.table_row_alt
-                row_content = "   " + row_style.apply(
-                    pad(truncate(row_text, width - 3), width - 3)
-                )
-            lines.append(row_content)
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if not self.rows:
-            return None
-        if key.key == Key.UP:
-            self.selected = max(0, self.selected - 1)
-        elif key.key == Key.DOWN:
-            self.selected = min(len(self.rows) - 1, self.selected + 1)
-        elif key.key == Key.PAGE_UP:
-            self.selected = max(0, self.selected - 10)
-        elif key.key == Key.PAGE_DOWN:
-            self.selected = min(len(self.rows) - 1, self.selected + 10)
-        elif key.key == Key.HOME:
-            self.selected = 0
-        elif key.key == Key.END:
-            self.selected = len(self.rows) - 1
-        elif key.key == Key.ENTER:
-            return f"select:{self.selected}"
-        return None
-
-    def _sync_scroll(self, visible_h: int) -> None:
-        """Keep scroll window tracking the selected row."""
-        if self.selected < self.scroll:
-            self.scroll = self.selected
-        elif self.selected >= self.scroll + visible_h:
-            self.scroll = self.selected - visible_h + 1
-
-    def _calculate_widths(self, total_width: int) -> list[int]:
-        """Auto-calculate column widths proportionally."""
-        index_overhead = 4 if self.show_index else 0
-        available = total_width - index_overhead
-        n = len(self.columns)
-        if n == 0:
-            return []
-        # Calculate based on specified widths or equal distribution
-        widths: list[int] = []
-        remaining = available
-        auto_count = 0
-        for col in self.columns:
-            if col.width:
-                w = min(col.width, remaining)
-                widths.append(w)
-                remaining -= w
-            else:
-                widths.append(0)
-                auto_count += 1
-        # Distribute remaining to auto-width columns
-        if auto_count > 0:
-            per_auto = remaining // auto_count
-            extra = remaining % auto_count
-            for i in range(len(widths)):
-                if widths[i] == 0:
-                    widths[i] = per_auto + (1 if extra > 0 else 0)
-                    extra -= 1
-        return widths
-
-
-# ==============================================================================
-# TREE VIEW — Hierarchical Data Display
-# ==============================================================================
-
-@dataclass
-class TreeNode:
-    """A single node in the tree."""
-    key: str
-    label: str
-    depth: int = 0
-    is_leaf: bool = True
-    expanded: bool = True
-    data: Any = None
-    children_count: int = 0
-
-
-class TreeView(Component):
-    """
-    Hierarchical tree display with expand/collapse and selection.
-
-    UX Best Practices enforced:
-      - Indentation clearly shows hierarchy depth
-      - Expand/collapse icons (▸/▾) indicate interactivity
-      - Selected item is highlighted for clear focus indication
-      - Branch vs leaf distinction via icons
-    """
-
-    def __init__(self, nodes: Optional[list[TreeNode]] = None,
-                 selected: int = 0, scroll: int = 0,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
-        self.nodes = nodes or []
-        self.selected = selected
-        self.scroll = scroll
-
-    def render(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-
-        if not self.nodes:
-            lines.append(STYLES.muted.apply(pad("  No items.", width)))
-            while len(lines) < height:
-                lines.append(" " * width)
-            return lines[:height]
-
-        # Sync scroll
-        if self.selected < self.scroll:
-            self.scroll = self.selected
-        elif self.selected >= self.scroll + height:
-            self.scroll = self.selected - height + 1
-
-        visible = self.nodes[self.scroll:self.scroll + height]
-        for idx, node in enumerate(visible):
-            real_idx = idx + self.scroll
-            is_selected = (real_idx == self.selected)
-
-            indent = "  " * node.depth
-            if node.is_leaf:
-                icon = STYLES.tree_branch.apply("  ")
-            elif node.expanded:
-                icon = STYLES.tree_branch.apply(f"{Icons.CHEVRON_D} ")
-            else:
-                icon = STYLES.tree_branch.apply(f"{Icons.POINTER} ")
-
-            content = truncate(f"{indent}{icon}{node.label}", width - 3)
-
-            if is_selected:
-                prefix = STYLES.cursor.apply(f" {Icons.POINTER} ")
-                line = prefix + STYLES.tree_sel.apply(pad(content, width - 3))
-            else:
-                node_style = STYLES.tree_leaf if node.is_leaf else STYLES.body
-                line = "   " + node_style.apply(pad(content, width - 3))
-
-            lines.append(line)
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if not self.nodes:
-            return None
-        if key.key == Key.UP:
-            self.selected = max(0, self.selected - 1)
-        elif key.key == Key.DOWN:
-            self.selected = min(len(self.nodes) - 1, self.selected + 1)
-        elif key.key == Key.PAGE_UP:
-            self.selected = max(0, self.selected - 10)
-        elif key.key == Key.PAGE_DOWN:
-            self.selected = min(len(self.nodes) - 1, self.selected + 10)
-        elif key.key == Key.ENTER:
-            return f"select:{self.selected}"
-        return None
-
-
-# ==============================================================================
-# TEXT INPUT — Single-Line Input with Cursor
-# ==============================================================================
-
-class TextInput(Component):
-    """
-    Single-line text input with visible cursor.
-
-    UX Best Practices enforced:
-      - Visible cursor block shows exact insertion point
-      - Backspace deletes backward naturally
-      - Placeholder text guides the user on expected input
-      - Enter submits, Escape cancels — standard modal input patterns
-    """
-
-    def __init__(self, value: str = "", placeholder: str = "",
-                 label: str = "", component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
-        self.value = value
-        self.placeholder = placeholder
-        self.label = label
-        self.cursor_pos = len(value)
-
-    def render(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-
-        if self.label:
-            lines.append(STYLES.body.apply(pad(f"  {self.label}", width)))
-
-        # Input line with cursor
-        display_value = self.value
-        if not display_value and self.placeholder:
-            input_line = STYLES.input_placeholder.apply(f"  {self.placeholder}")
-        else:
-            input_line = STYLES.input_text.apply(f"  {display_value}") + STYLES.cursor.apply("█")
-
-        lines.append(pad(input_line, width))
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if key.key == Key.ENTER:
-            return f"submit:{self.value}"
-        elif key.key == Key.ESCAPE:
-            return "cancel"
-        elif key.key == Key.BACKSPACE:
-            if self.cursor_pos > 0:
-                self.value = self.value[:self.cursor_pos - 1] + self.value[self.cursor_pos:]
-                self.cursor_pos -= 1
-        elif key.key == Key.DELETE:
-            if self.cursor_pos < len(self.value):
-                self.value = self.value[:self.cursor_pos] + self.value[self.cursor_pos + 1:]
-        elif key.key == Key.LEFT:
-            self.cursor_pos = max(0, self.cursor_pos - 1)
-        elif key.key == Key.RIGHT:
-            self.cursor_pos = min(len(self.value), self.cursor_pos + 1)
-        elif key.key == Key.HOME:
-            self.cursor_pos = 0
-        elif key.key == Key.END:
-            self.cursor_pos = len(self.value)
-        elif key.key == Key.CHAR:
-            self.value = self.value[:self.cursor_pos] + key.char + self.value[self.cursor_pos:]
-            self.cursor_pos += 1
-        return None
 
 
 # ==============================================================================
@@ -521,9 +177,7 @@ class TextViewer(Component):
     """
 
     def __init__(self, content_lines: Optional[list[str]] = None,
-                 scroll: int = 0, show_line_numbers: bool = True,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
+                 scroll: int = 0, show_line_numbers: bool = True) -> None:
         self.content_lines = content_lines or []
         self.scroll = scroll
         self.show_line_numbers = show_line_numbers
@@ -552,25 +206,6 @@ class TextViewer(Component):
             lines.append(" " * width)
         return lines[:height]
 
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        max_scroll = max(0, len(self.content_lines) - 1)
-        if key.key == Key.UP:
-            self.scroll = max(0, self.scroll - 1)
-        elif key.key == Key.DOWN:
-            self.scroll = min(max_scroll, self.scroll + 1)
-        elif key.key == Key.PAGE_UP:
-            self.scroll = max(0, self.scroll - 20)
-        elif key.key == Key.PAGE_DOWN:
-            self.scroll = min(max_scroll, self.scroll + 20)
-        elif key.key == Key.HOME:
-            self.scroll = 0
-        elif key.key == Key.END:
-            self.scroll = max_scroll
-        elif key.key == Key.ESCAPE:
-            return "back"
-        return None
-
-
 # ==============================================================================
 # MODAL — Centered Overlay
 # ==============================================================================
@@ -589,9 +224,7 @@ class Modal(Component):
 
     def __init__(self, title: str = "", body_lines: Optional[list[str]] = None,
                  hints: str = "", max_width: int = 60,
-                 border: BoxChars = BORDER_ROUNDED,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
+                 border: BoxChars = BORDER_ROUNDED) -> None:
         self.title = title
         self.body_lines = body_lines or []
         self.hints = hints
@@ -663,29 +296,12 @@ class Modal(Component):
         h_pad = " " * max(0, h_center)
         centered_frame = [h_pad + line for line in frame]
 
-        # Shadow: offset dim lines below and to the right
-        shadow_frame: list[str] = []
-        for line in centered_frame:
-            shadow_frame.append(line)
-        shadow_offset = " " * max(0, h_center + 2)
-        shadow_w = modal_w
-        shadow_line = shadow_offset + STYLES.shadow.apply("░" * shadow_w)
-
         v_start = max(0, (height - len(centered_frame)) // 2)
         result: list[str] = [" " * width] * height
         for i, line in enumerate(centered_frame):
             if 0 <= v_start + i < height:
                 result[v_start + i] = pad(line, width)
-        # Render shadow lines below modal
-        for i in range(len(centered_frame)):
-            shadow_row = v_start + i + 1
-            if 1 <= shadow_row < height:
-                # Add shadow on the right side of each modal line
-                existing = result[shadow_row]
-                shadow_char = STYLES.shadow.apply("░")
-                shadow_right = h_center + modal_w
-                if shadow_right < width:
-                    result[shadow_row] = existing  # Just keep existing for now
+
         # Bottom shadow
         bottom_shadow_row = v_start + len(centered_frame)
         if 0 <= bottom_shadow_row < height:
@@ -711,9 +327,7 @@ class ConfirmDialog(Component):
       - Message explains consequences before asking
     """
 
-    def __init__(self, title: str = "Confirm", message_lines: Optional[list[str]] = None,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
+    def __init__(self, title: str = "Confirm", message_lines: Optional[list[str]] = None) -> None:
         self.title = title
         self.message_lines = message_lines or []
         self._modal = Modal(
@@ -725,14 +339,6 @@ class ConfirmDialog(Component):
 
     def render(self, width: int, height: int) -> list[str]:
         return self._modal.render(width, height)
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if key.char.lower() == "y":
-            return "confirm"
-        elif key.char.lower() == "n" or key.key == Key.ESCAPE:
-            return "cancel"
-        return None
-
 
 # ==============================================================================
 # ACTION MENU — Selectable Menu Overlay
@@ -750,8 +356,7 @@ class ActionMenu(Component):
     """
 
     def __init__(self, title: str = "Actions", items: Optional[list[str]] = None,
-                 selected: int = 0, component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
+                 selected: int = 0) -> None:
         self.title = title
         self.items = items or []
         self.selected = selected
@@ -772,69 +377,6 @@ class ActionMenu(Component):
         )
         return modal.render(width, height)
 
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if key.key == Key.UP:
-            self.selected = max(0, self.selected - 1)
-        elif key.key == Key.DOWN:
-            self.selected = min(len(self.items) - 1, self.selected + 1)
-        elif key.key == Key.ENTER:
-            if self.items:
-                return f"action:{self.items[self.selected]}"
-        elif key.key == Key.ESCAPE:
-            return "cancel"
-        return None
-
-
-# ==============================================================================
-# PROGRESS BAR — Animated Progress Indicator
-# ==============================================================================
-
-class ProgressBar(Component):
-    """
-    Animated progress bar with label and percentage.
-
-    UX Best Practices enforced:
-      - Visual progress feedback reduces user anxiety during long operations
-      - Percentage display provides quantitative context
-      - Gradient fill conveys forward momentum
-      - Label identifies what operation is in progress
-    """
-
-    def __init__(self, label: str = "", value: float = 0.0,
-                 bar_width: int = 30, component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.label = label
-        self.value = max(0.0, min(1.0, value))
-        self.bar_width = bar_width
-
-    def render(self, width: int, height: int) -> list[str]:
-        effective_bar_w = min(self.bar_width, width - 20)
-        filled = int(effective_bar_w * self.value)
-        empty = effective_bar_w - filled
-
-        if CAPS.truecolor and filled > 0:
-            # Gradient fill from primary to accent
-            fill_parts: list[str] = []
-            for i in range(filled):
-                t = i / max(filled - 1, 1)
-                c = Color.lerp(PALETTE.primary, PALETTE.accent, t)
-                fill_parts.append(f"{c.fg()}{Icons.BLOCK_FULL}")
-            fill_parts.append(_Ansi.RESET)
-            fill_str = "".join(fill_parts)
-        else:
-            fill_str = STYLES.progress_fill.apply(Icons.BLOCK_FULL * filled)
-
-        empty_str = STYLES.progress_empty.apply(Icons.BLOCK_1_4 * empty)
-        pct = f"{self.value * 100:5.1f}%"
-
-        bar_line = f"  {self.label}: {fill_str}{empty_str} {pct}"
-        lines = [pad(bar_line, width)]
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
 # ==============================================================================
 # SPINNER — Animated Activity Indicator
 # ==============================================================================
@@ -850,9 +392,7 @@ class Spinner(Component):
     """
 
     def __init__(self, label: str = "Working...",
-                 frames: tuple[str, ...] = Icons.SPINNER_DOTS,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
+                 frames: tuple[str, ...] = Icons.SPINNER_DOTS) -> None:
         self.label = label
         self.frames = frames
         self.frame_index = 0
@@ -903,9 +443,7 @@ class ToastManager(Component):
       - Newest toasts appear at bottom (natural reading order)
     """
 
-    def __init__(self, max_visible: int = 3,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
+    def __init__(self, max_visible: int = 3) -> None:
         self.toasts: list[ToastMessage] = []
         self.max_visible = max_visible
 
@@ -926,13 +464,7 @@ class ToastManager(Component):
 
         lines: list[str] = []
         for toast in visible:
-            icon_map = {
-                "success": (Icons.CHECK, STYLES.success),
-                "warning": (Icons.WARNING, STYLES.warning),
-                "error":   (Icons.CROSS, STYLES.error),
-                "info":    (Icons.INFO, STYLES.info),
-            }
-            icon, style = icon_map.get(toast.severity, (Icons.INFO, STYLES.info))
+            icon, style = _SEVERITY_DECOR.get(toast.severity, (Icons.INFO, STYLES.info))
             content = f"  {style.apply(icon)} {toast.message}"
             lines.append(pad(content, width))
 
@@ -945,309 +477,6 @@ class ToastManager(Component):
         """Whether there are any visible toasts."""
         self._cleanup()
         return len(self.toasts) > 0
-
-
-# ==============================================================================
-# TABS — Horizontal Tab Bar
-# ==============================================================================
-
-class Tabs(Component):
-    """
-    Horizontal tab bar for switching between views or sections.
-
-    UX Best Practices enforced:
-      - Active tab is visually distinct (bold, underlined)
-      - Inactive tabs are clearly clickable but subdued
-      - Tab labels are concise for scannability
-    """
-
-    def __init__(self, labels: Optional[list[str]] = None,
-                 active: int = 0, component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
-        self.labels = labels or []
-        self.active = active
-
-    def render(self, width: int, height: int) -> list[str]:
-        parts: list[str] = []
-        for i, label in enumerate(self.labels):
-            if i == self.active:
-                tab = Style(fg=PALETTE.primary, bold=True, underline=True).apply(f" {label} ")
-            else:
-                tab = STYLES.muted.apply(f" {label} ")
-            parts.append(tab)
-            if i < len(self.labels) - 1:
-                parts.append(STYLES.dim.apply(" │ "))
-
-        line = "".join(parts)
-        lines = [pad(line, width)]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if key.key == Key.LEFT:
-            self.active = max(0, self.active - 1)
-            return f"tab:{self.active}"
-        elif key.key == Key.RIGHT:
-            self.active = min(len(self.labels) - 1, self.active + 1)
-            return f"tab:{self.active}"
-        return None
-
-
-# ==============================================================================
-# BREADCRUMB — Navigation Path
-# ==============================================================================
-
-class Breadcrumb(Component):
-    """
-    Navigation breadcrumb trail.
-
-    UX Best Practice: Breadcrumbs provide spatial orientation in nested views,
-    reducing the "where am I?" confusion.
-    """
-
-    def __init__(self, segments: Optional[list[str]] = None,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.segments = segments or []
-
-    def render(self, width: int, height: int) -> list[str]:
-        sep = STYLES.dim.apply(f" {Icons.CHEVRON_R} ")
-        parts: list[str] = []
-        for i, seg in enumerate(self.segments):
-            if i == len(self.segments) - 1:
-                parts.append(STYLES.emphasis.apply(seg))
-            else:
-                parts.append(STYLES.muted.apply(seg))
-        crumb = sep.join(parts)
-        line = pad(f"  {crumb}", width)
-        lines = [line]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
-# ==============================================================================
-# SEARCH BAR — Inline Search Input
-# ==============================================================================
-
-class SearchBar(Component):
-    """
-    Inline search bar with live filter feedback.
-
-    UX Best Practices enforced:
-      - Search icon provides affordance
-      - Blinking cursor shows active input
-      - Result count feedback immediately visible
-      - Escape clears search (undo pattern)
-    """
-
-    def __init__(self, query: str = "", result_count: int = 0,
-                 total_count: int = 0, active: bool = False,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
-        self.query = query
-        self.result_count = result_count
-        self.total_count = total_count
-        self.active = active
-
-    def render(self, width: int, height: int) -> list[str]:
-        if self.active:
-            icon = STYLES.cursor.apply("/ ")
-            query_text = self.query + STYLES.cursor.apply("█")
-            count = STYLES.muted.apply(f" ({self.result_count}/{self.total_count})")
-            line = f"  {icon}{query_text}{count}"
-        else:
-            line = STYLES.muted.apply(f"  / Filter ({self.total_count} items)")
-
-        lines = [pad(line, width)]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        if not self.active:
-            return None
-        if key.key == Key.ENTER:
-            return f"search:{self.query}"
-        elif key.key == Key.ESCAPE:
-            self.query = ""
-            self.active = False
-            return "search_cancel"
-        elif key.key == Key.BACKSPACE:
-            self.query = self.query[:-1]
-            return f"search_update:{self.query}"
-        elif key.key == Key.CHAR:
-            self.query += key.char
-            return f"search_update:{self.query}"
-        return None
-
-
-# ==============================================================================
-# BADGE — Inline Status/Count Indicator
-# ==============================================================================
-
-class Badge(Component):
-    """
-    Inline status badge or count indicator.
-
-    UX Best Practice: Badges provide glanceable status without requiring
-    the user to read detailed text.
-    """
-
-    def __init__(self, text: str = "", style: Optional[Style] = None,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.text = text
-        self.badge_style = style or STYLES.badge_count
-
-    def render(self, width: int, height: int) -> list[str]:
-        badge = self.badge_style.apply(f" {self.text} ")
-        lines = [pad(badge, width)]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
-# ==============================================================================
-# SPARKLINE — Tiny Inline Chart
-# ==============================================================================
-
-class Sparkline(Component):
-    """
-    Tiny inline bar chart for data visualization.
-
-    UX Best Practice: Sparklines provide trend context without consuming
-    significant UI space (Edward Tufte's data-ink ratio principle).
-    """
-
-    BLOCKS = (" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█")
-
-    def __init__(self, values: Optional[list[float]] = None,
-                 style: Optional[Style] = None,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.values = values or []
-        self.spark_style = style or STYLES.info
-
-    def render(self, width: int, height: int) -> list[str]:
-        if not self.values:
-            lines = [" " * width]
-        else:
-            max_val = max(self.values) if max(self.values) > 0 else 1.0
-            chars: list[str] = []
-            for v in self.values[:width]:
-                idx = int((v / max_val) * (len(self.BLOCKS) - 1))
-                chars.append(self.BLOCKS[idx])
-            spark = self.spark_style.apply("".join(chars))
-            lines = [pad(spark, width)]
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
-# ==============================================================================
-# SPLIT PANE — Two-Panel Layout with Divider
-# ==============================================================================
-
-class SplitPane(Component):
-    """
-    Two-panel layout with a vertical divider.
-
-    UX Best Practices enforced:
-      - Ratio-based sizing adapts to terminal width
-      - Divider line provides clear visual separation
-      - Left panel typically holds the list, right panel shows details
-        (standard master-detail pattern)
-    """
-
-    def __init__(self, left: Optional[Component] = None,
-                 right: Optional[Component] = None,
-                 ratio: float = 0.55, divider: str = "│",
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.left = left
-        self.right = right
-        self.ratio = ratio
-        self.divider = divider
-
-    def render(self, width: int, height: int) -> list[str]:
-        left_w = int(width * self.ratio)
-        right_w = width - left_w - 1  # 1 for divider
-
-        left_lines = self.left.render(left_w, height) if self.left else []
-        right_lines = self.right.render(right_w, height) if self.right else []
-
-        while len(left_lines) < height:
-            left_lines.append(" " * left_w)
-        while len(right_lines) < height:
-            right_lines.append(" " * right_w)
-
-        sep = STYLES.dim.apply(self.divider)
-        lines: list[str] = []
-        for i in range(height):
-            l = pad(truncate(left_lines[i], left_w), left_w)
-            r = pad(truncate(right_lines[i], right_w), right_w)
-            lines.append(l + sep + r)
-
-        return lines
-
-
-# ==============================================================================
-# SCROLL VIEW — Generic Scrollable Viewport
-# ==============================================================================
-
-class ScrollView(Component):
-    """
-    Generic scrollable viewport wrapper.
-
-    UX Best Practice: Scrollable regions prevent content overflow from
-    breaking layout. Users can always access all content via scrolling.
-    """
-
-    def __init__(self, content_lines: Optional[list[str]] = None,
-                 scroll: int = 0, component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id, focusable=True)
-        self.content_lines = content_lines or []
-        self.scroll = scroll
-
-    def render(self, width: int, height: int) -> list[str]:
-        total = len(self.content_lines)
-        visible = self.content_lines[self.scroll:self.scroll + height]
-        show_scrollbar = total > height
-        content_w = width - (1 if show_scrollbar else 0)
-
-        lines: list[str] = []
-        for line in visible:
-            lines.append(pad(truncate(line, content_w), content_w))
-        while len(lines) < height:
-            lines.append(" " * content_w)
-
-        # Add scrollbar track with position thumb
-        if show_scrollbar:
-            thumb_h = max(1, height * height // total)
-            thumb_start = int(self.scroll / max(total - 1, 1) * (height - thumb_h))
-            for i in range(height):
-                if i < len(lines):
-                    if thumb_start <= i < thumb_start + thumb_h:
-                        lines[i] = lines[i][:content_w] + STYLES.accent_bar.apply(Glyphs.SCROLL_THUMB)
-                    else:
-                        lines[i] = lines[i][:content_w] + STYLES.dim.apply(Glyphs.SCROLL_TRACK)
-
-        return lines[:height]
-
-    def handle_key(self, key: KeyEvent) -> Optional[str]:
-        max_scroll = max(0, len(self.content_lines) - 1)
-        if key.key == Key.UP:
-            self.scroll = max(0, self.scroll - 1)
-        elif key.key == Key.DOWN:
-            self.scroll = min(max_scroll, self.scroll + 1)
-        elif key.key == Key.PAGE_UP:
-            self.scroll = max(0, self.scroll - 20)
-        elif key.key == Key.PAGE_DOWN:
-            self.scroll = min(max_scroll, self.scroll + 20)
-        return None
 
 
 # ==============================================================================
@@ -1267,9 +496,7 @@ class WizardPipeline(Component):
 
     def __init__(self, steps: Optional[list[str]] = None,
                  current: int = 0,
-                 statuses: Optional[list[str]] = None,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
+                 statuses: Optional[list[str]] = None) -> None:
         self.steps = steps or []
         self.current = current
         self.statuses = statuses or [""] * len(self.steps)
@@ -1332,215 +559,15 @@ def overlay_on(background: list[str], overlay_lines: list[str]) -> list[str]:
 # GAUGE — Health Score Indicator
 # ==============================================================================
 
-class Gauge(Component):
-    """
-    Visual health gauge using block-element characters.
-
-    UX Best Practice: Gauges provide an instant visual impression of health
-    or completion without requiring the user to parse numbers.
-    """
-
-    def __init__(self, value: float = 0.0, label: str = "",
-                 max_width: int = 20, component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.value = max(0.0, min(1.0, value))
-        self.label = label
-        self.max_width = max_width
-
-    def render(self, width: int, height: int) -> list[str]:
-        bar_w = min(self.max_width, width - len(self.label) - 12)
-        filled = int(bar_w * self.value)
-        empty = bar_w - filled
-
-        # Color-coded: green > 0.7, amber > 0.4, red <= 0.4
-        if self.value > 0.7:
-            fill_style = STYLES.success
-        elif self.value > 0.4:
-            fill_style = STYLES.warning
-        else:
-            fill_style = STYLES.error
-
-        fill_str = fill_style.apply(Icons.BLOCK_FULL * filled)
-        empty_str = STYLES.dim.apply(Glyphs.THIN_H * empty)
-        pct = f"{self.value * 100:.0f}%"
-
-        # Gauge icon
-        if self.value >= 0.95:
-            icon = Glyphs.GAUGE_FULL
-        elif self.value >= 0.7:
-            icon = Glyphs.GAUGE_THREE_Q
-        elif self.value >= 0.4:
-            icon = Glyphs.GAUGE_HALF
-        elif self.value > 0.05:
-            icon = Glyphs.GAUGE_QUARTER
-        else:
-            icon = Glyphs.GAUGE_EMPTY
-
-        line = f"  {fill_style.apply(icon)} {self.label}: {fill_str}{empty_str} {pct}"
-        lines = [pad(line, width)]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
 # ==============================================================================
 # BAR CHART — Horizontal Data Bars
 # ==============================================================================
-
-class BarChart(Component):
-    """
-    Horizontal bar chart for comparing values.
-
-    UX Best Practice: Bar charts enable instant visual comparison across
-    multiple items, following Tufte's data-ink ratio principle.
-    """
-
-    def __init__(self, items: Optional[list[tuple[str, float]]] = None,
-                 max_bar_width: int = 30,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.items = items or []
-        self.max_bar_width = max_bar_width
-
-    def render(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-        if not self.items:
-            lines.append(STYLES.muted.apply(pad("  No data.", width)))
-            while len(lines) < height:
-                lines.append(" " * width)
-            return lines[:height]
-
-        max_val = max(v for _, v in self.items) if self.items else 1.0
-        max_val = max(max_val, 0.001)  # Prevent division by zero
-        max_label = max(len(label) for label, _ in self.items)
-        bar_w = min(self.max_bar_width, width - max_label - 12)
-
-        for label, value in self.items:
-            filled = int(bar_w * value / max_val)
-            bar = STYLES.info.apply(Icons.BLOCK_FULL * filled)
-            empty = STYLES.dim.apply(Glyphs.THIN_H * (bar_w - filled))
-            val_str = STYLES.muted.apply(f" {value:.1f}")
-            lbl = pad(f"  {label}", max_label + 3)
-            lines.append(STYLES.body.apply(lbl) + bar + empty + val_str)
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
 
 # ==============================================================================
 # KEY-VALUE GRID — Formatted Metadata Display
 # ==============================================================================
 
-class KeyValueGrid(Component):
-    """
-    Automatic two-column grid layout for metadata key-value pairs.
-
-    UX Best Practice: Aligned labels with consistent spacing improve
-    scannability and reduce visual noise in metadata panels.
-    """
-
-    def __init__(self, title: str = "",
-                 items: Optional[list[tuple[str, str]]] = None,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.title = title
-        self.items = items or []
-
-    def render(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-        if self.title:
-            lines.append(STYLES.title.apply(f"  {self.title}"))
-            lines.append("")
-
-        if not self.items:
-            lines.append(STYLES.muted.apply(pad("  No data.", width)))
-        else:
-            max_key = max((len(k) for k, _ in self.items), default=0)
-            for key, value in self.items:
-                label = pad(f"  {key}:", max_key + 4)
-                lines.append(STYLES.muted.apply(label) + STYLES.body.apply(f" {value}"))
-
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
 # ==============================================================================
 # SEPARATOR — Themed Horizontal Rule with Label
 # ==============================================================================
 
-class Separator(Component):
-    """
-    Themed horizontal rule with optional centered label.
-
-    UX Best Practice: Separators create clear visual section boundaries
-    without consuming significant vertical space.
-    """
-
-    def __init__(self, label: str = "",
-                 style: Optional[Style] = None,
-                 char: str = "─",
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.label = label
-        self.sep_style = style or STYLES.dim
-        self.char = char
-
-    def render(self, width: int, height: int) -> list[str]:
-        if self.label:
-            label_text = f" {self.label} "
-            label_vis = len(label_text)
-            left_w = max(2, (width - label_vis) // 2)
-            right_w = max(0, width - label_vis - left_w)
-            line = (
-                self.sep_style.apply(self.char * left_w)
-                + STYLES.muted.apply(label_text)
-                + self.sep_style.apply(self.char * right_w)
-            )
-        else:
-            line = self.sep_style.apply(self.char * width)
-
-        lines = [line]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]
-
-
-# ==============================================================================
-# NOTIFICATION BANNER — Full-Width Alert
-# ==============================================================================
-
-class NotificationBanner(Component):
-    """
-    Full-width alert banner with icon and severity styling.
-
-    UX Best Practice: Banners command attention for critical information
-    that must not be missed (e.g., destructive operation warnings).
-    """
-
-    def __init__(self, message: str = "", severity: str = "info",
-                 dismissable: bool = True,
-                 component_id: Optional[str] = None) -> None:
-        super().__init__(component_id=component_id)
-        self.message = message
-        self.severity = severity
-        self.dismissable = dismissable
-
-    def render(self, width: int, height: int) -> list[str]:
-        icon_map = {
-            "info":    (Icons.INFO, STYLES.info),
-            "success": (Icons.CHECK, STYLES.success),
-            "warning": (Icons.WARNING, STYLES.warning),
-            "error":   (Icons.CROSS, STYLES.error),
-        }
-        icon, style = icon_map.get(self.severity, (Icons.INFO, STYLES.info))
-        dismiss = STYLES.dim.apply(" [Esc]") if self.dismissable else ""
-        content = f" {style.apply(icon)} {self.message}{dismiss}"
-        bg_style = Style(bg=PALETTE.surface_alt)
-        line = bg_style.apply(pad(content, width))
-
-        lines = [line]
-        while len(lines) < height:
-            lines.append(" " * width)
-        return lines[:height]

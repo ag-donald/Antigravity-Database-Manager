@@ -12,10 +12,13 @@ import base64
 import glob
 import json
 import os
+import re
 import sqlite3
 import time
+import urllib.parse
 
-from .constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, DB_FILENAME
+from .constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, DB_FILENAME, PLACEHOLDER_TITLE_PREFIX
+from .environment import EnvironmentResolver
 from .models import DatabaseSnapshot, ConversationEntry, HealthReport, WorkspaceDiagnostic
 from .protobuf import ProtobufEncoder
 
@@ -84,7 +87,7 @@ def extract_existing_metadata(decoded: bytes) -> tuple[dict[str, str], dict[str,
                         _, sp = ProtobufEncoder.decode_varint(content, sp)
                         sl, sp = ProtobufEncoder.decode_varint(content, sp)
                         info_b64 = content[sp:sp + sl].decode('utf-8', errors='strict')
-                    except (UnicodeDecodeError, Exception):
+                    except Exception:
                         pass
             elif wt == 0:
                 _, ep = ProtobufEncoder.decode_varint(entry, ep)
@@ -106,8 +109,9 @@ def extract_existing_metadata(decoded: bytes) -> tuple[dict[str, str], dict[str,
                 try:
                     title = raw_inner[ip:ip + il].decode('utf-8', errors='strict')
                 except UnicodeDecodeError:
-                    title = f"Conversation {uid[:8]}"
-                if not title.startswith("Conversation (") and not title.startswith("Conversation "):
+                    title = f"{PLACEHOLDER_TITLE_PREFIX} {uid[:8]}"
+                if not title.startswith(f"{PLACEHOLDER_TITLE_PREFIX} ") and \
+                        not title.startswith(f"{PLACEHOLDER_TITLE_PREFIX} ("):
                     titles[uid] = title
             except Exception:
                 pass
@@ -115,23 +119,30 @@ def extract_existing_metadata(decoded: bytes) -> tuple[dict[str, str], dict[str,
     return titles, inner_blobs
 
 
-def _normalize_workspace_uri(uri: str) -> str:
-    """Normalizes a file:/// workspace URI so that Windows drive letters are
-    always lowercased, preventing `file:///h%3A/...` and `file:///H%3A/..`
-    from being treated as separate workspaces.
+# Anchored: these values hold a single URI, so embedded occurrences are never
+# rewritten. Matches raw ':' and both hex cases of the percent-encoded colon.
+_DRIVE_URI_RE = re.compile(r"^file:///([A-Za-z])(:|%3[Aa])(?=/|$)")
 
-    Handles both encoded (``%3A``) and plain (``:``) forms:
-      - ``file:///H%3A/path`` → ``file:///h%3A/path``
-      - ``file:///H:/path``  → ``file:///h:/path``
+
+def canonicalize_drive_uri(uri: str) -> str:
     """
-    import re
-    # Match file:/// followed by a single letter + colon (plain or percent-encoded)
-    return re.sub(
-        r'^(file:///)(\w)(%3A|:)',
-        lambda m: m.group(1) + m.group(2).lower() + m.group(3),
-        uri,
-        flags=re.IGNORECASE,
-    )
+    Normalizes a ``file:///`` URI's Windows drive-letter separator to the
+    canonical frontend form: lowercase letter + uppercase-hex ``%3A``
+    (``file:///C:/x`` / ``file:///c%3a/x`` -> ``file:///c%3A/x``), so one
+    workspace never appears under several spellings. URIs without a drive
+    letter (macOS/Linux paths) are returned unchanged.
+    """
+    return _DRIVE_URI_RE.sub(lambda m: f"file:///{m.group(1).lower()}%3A", uri)
+
+
+def file_uri_to_path(uri: str) -> str:
+    """Decodes a ``file:///`` URI into an OS path (drive-letter or POSIX)."""
+    if not uri.startswith("file:///"):
+        return uri
+    decoded = urllib.parse.unquote(uri[len("file:///"):])
+    if len(decoded) >= 2 and decoded[1] == ":":
+        return decoded       # Windows drive path (c:/...)
+    return "/" + decoded     # POSIX absolute path
 
 
 def extract_workspace_uri(raw_inner: bytes) -> str:
@@ -142,7 +153,6 @@ def extract_workspace_uri(raw_inner: bytes) -> str:
     if b"file:///" not in raw_inner:
         return ""
     try:
-        from .protobuf import ProtobufEncoder
         pos = 0
         latest_uri = ""
         while pos < len(raw_inner):
@@ -178,7 +188,7 @@ def extract_workspace_uri(raw_inner: bytes) -> str:
             else:
                 pos = ProtobufEncoder.skip_protobuf_field(raw_inner, pos, wire_type)
         if latest_uri:
-            return _normalize_workspace_uri(latest_uri)
+            return canonicalize_drive_uri(latest_uri)
     except Exception:
         pass
     
@@ -191,10 +201,30 @@ def extract_workspace_uri(raw_inner: bytes) -> str:
                 if ws_bytes[char_idx] < 32 or ws_bytes[char_idx] > 126:
                     ws_bytes = ws_bytes[:char_idx]
                     break
-            return _normalize_workspace_uri(ws_bytes.decode('utf-8', errors='ignore'))
+            return canonicalize_drive_uri(ws_bytes.decode('utf-8', errors='ignore'))
     except Exception:
         pass
     return ""
+
+
+def normalize_path(p: str) -> str:
+    """Canonicalizes a filesystem path for identity comparison."""
+    return os.path.abspath(os.path.realpath(os.path.expanduser(p))) if p else ""
+
+
+def db_install_label(path: str) -> str:
+    """Human label for the IDE installation a database path belongs to."""
+    if "Antigravity IDE" in path:
+        return "Antigravity IDE"
+    return "Antigravity (deprecated)"
+
+
+def summarize_workspace_health(diagnostics: list[WorkspaceDiagnostic]) -> tuple[int, int, int]:
+    """Classifies workspaces as (healthy, warn, missing): accessible on disk /
+    present but inaccessible / absent from the filesystem."""
+    healthy = sum(1 for d in diagnostics if d.exists_on_disk and d.is_accessible)
+    missing = sum(1 for d in diagnostics if not d.exists_on_disk)
+    return healthy, len(diagnostics) - healthy - missing, missing
 
 
 def extract_workspace_count(inner_blobs: dict[str, bytes]) -> int:
@@ -355,11 +385,10 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
             
             results.append(ConversationEntry(
                 uuid=uid, title=title, workspace_uri=workspace_uri,
-                has_timestamps=has_timestamps, modified_epoch=0,
+                has_timestamps=has_timestamps,
                 json_synced=json_synced, is_stale=is_stale
             ))
 
-        # Sort newest first (since we don't have true epoch, we rely on the order in JSON/PB or leave it)
         return results
     except Exception:
         return []
@@ -384,8 +413,6 @@ def analyze_workspaces(db_path: str) -> list[WorkspaceDiagnostic]:
     Extracts all unique workspace URIs from a database and validates
     their physical existence on the filesystem.
     """
-    import urllib.parse
-
     convs = list_conversations(db_path)
     ws_map: dict[str, list[str]] = {}
     for c in convs:
@@ -394,16 +421,7 @@ def analyze_workspaces(db_path: str) -> list[WorkspaceDiagnostic]:
 
     results: list[WorkspaceDiagnostic] = []
     for uri, uuids in ws_map.items():
-        # Decode file:/// URI to local path
-        decoded = uri
-        if uri.startswith("file:///"):
-            raw_path = uri[len("file:///"):]
-            decoded = urllib.parse.unquote(raw_path)
-            # On Windows, preserve the drive letter (e.g. C:/...)
-            if len(decoded) >= 2 and decoded[1] == ':':
-                pass  # Already good
-            else:
-                decoded = "/" + decoded  # POSIX absolute path
+        decoded = file_uri_to_path(uri)
 
         exists = os.path.isdir(decoded)
         accessible = os.access(decoded, os.R_OK) if exists else False
@@ -423,13 +441,7 @@ def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
     """
     Scans the current DB, any other detected primary DBs, and all of their backups.
     """
-    from .environment import EnvironmentResolver
-
-    # Normalize path strings for comparison
-    def norm(p: str) -> str:
-        return os.path.abspath(os.path.realpath(os.path.expanduser(p)))
-
-    norm_current = norm(current_db_path)
+    norm_current = normalize_path(current_db_path)
 
     # 1. Get all candidate primary DB paths, ensuring current_db_path is first and unique
     primary_paths = [current_db_path]
@@ -438,7 +450,7 @@ def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
     candidates = EnvironmentResolver.get_antigravity_db_paths()
     for c in candidates:
         if os.path.isfile(c):
-            norm_c = norm(c)
+            norm_c = normalize_path(c)
             if norm_c not in seen_norms:
                 primary_paths.append(c)
                 seen_norms.add(norm_c)
@@ -448,17 +460,10 @@ def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
 
     # 2. Scan primary DBs
     for p in primary_paths:
-        norm_p = norm(p)
+        norm_p = normalize_path(p)
         is_current = (norm_p == norm_current)
 
-        # Label the primary DBs
-        label = "CURRENT"
-        if "Antigravity IDE" in p:
-            label = "Antigravity IDE"
-        elif "Antigravity" in p or "antigravity" in p:
-            label = "Antigravity (deprecated)"
-
-        sn = scan_database(p, label, is_current=is_current)
+        sn = scan_database(p, db_install_label(p), is_current=is_current)
         snapshots.append(sn)
 
     # 3. Discover backups for each of the primary directories
@@ -467,7 +472,7 @@ def scan_all(current_db_path: str) -> list[DatabaseSnapshot]:
         db_dir = os.path.dirname(p)
         if os.path.isdir(db_dir):
             for b in discover_backups(db_dir):
-                norm_b = norm(b)
+                norm_b = normalize_path(b)
                 if norm_b not in scanned_paths:
                     scanned_paths.add(norm_b)
                     prefix = "IDE Backup" if "Antigravity IDE" in p else "Depr Backup"

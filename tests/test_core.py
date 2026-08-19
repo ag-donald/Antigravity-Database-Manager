@@ -20,12 +20,14 @@ Coverage:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 
 # Add the project root to path for imports.
 # NOTE: This is intentional for a zero-dependency project without pyproject.toml.
@@ -34,11 +36,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.core.protobuf import ProtobufEncoder
-from src.core.constants import PB_KEY, JSON_KEY
-from src.core.models import MergeResult, RestoreResult, MergeDiff
+from src.core.constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, DB_FILENAME
 from src.core import db_operations as ops
 from src.core import db_scanner as scanner
 from src.core import diagnostic
+from src.core import uri_fix
 
 
 # ==============================================================================
@@ -765,37 +767,6 @@ class TestStorageManager(unittest.TestCase):
 
 
 # ==============================================================================
-# TEST: WIDGET TRUNCATION (ANSI-AWARE)
-# ==============================================================================
-
-class TestWidgetTrunc(unittest.TestCase):
-    """Tests for the ANSI-aware _trunc function in widgets.py."""
-
-    def test_trunc_plain_string(self):
-        """Plain strings should truncate normally."""
-        from src.ui_tui.widgets import _trunc
-        self.assertEqual(_trunc("Hello World", 5), "Hell…")
-        self.assertEqual(_trunc("Hi", 10), "Hi")
-
-    def test_trunc_ansi_string(self):
-        """ANSI escape sequences should not count toward visible length."""
-        from src.ui_tui.widgets import _trunc
-        # Bold + Reset = 8 bytes of escapes, 5 visible chars
-        ansi = "\x1b[1mHello\x1b[0m"
-        result = _trunc(ansi, 10)
-        # 5 visible chars < 10, so no truncation
-        self.assertEqual(result, ansi)
-
-    def test_trunc_ansi_forces_cut(self):
-        """When visible length exceeds width, ANSI strings should be truncated correctly."""
-        from src.ui_tui.widgets import _trunc
-        ansi = "\x1b[1mHelloWorld\x1b[0m"
-        result = _trunc(ansi, 5)
-        # Should have 4 visible chars + ellipsis
-        self.assertIn("…", result)
-
-
-# ==============================================================================
 # TEST: MULTIPLE DATABASE RESOLUTION AND SCANNING
 # ==============================================================================
 
@@ -868,13 +839,6 @@ class TestMultipleDatabaseResolution(unittest.TestCase):
 # ==============================================================================
 # TEST: BUG #12 URI FIX (src/core/uri_fix.py)
 # ==============================================================================
-
-import tempfile as _tempfile
-from pathlib import Path
-
-from src.core import uri_fix
-from src.core.constants import BACKUP_PREFIX, DB_FILENAME
-
 
 def _pb_fields(msg: bytes) -> dict[int, list]:
     """Minimal independent wire-format walker for assertions: maps field
@@ -1098,7 +1062,7 @@ class TestUriFixNormalizeDatabase(unittest.TestCase):
     """SQLite integration: dry-run, discoverable backups, identity checks."""
 
     def setUp(self):
-        self.tmp = _tempfile.mkdtemp()
+        self.tmp = tempfile.mkdtemp()
         self.db_path = os.path.join(self.tmp, DB_FILENAME)
         raw_entry = ProtobufEncoder.build_trajectory_entry(
             "aaaaaaaa-0000-0000-0000-000000000001", "Raw One",
@@ -1201,7 +1165,7 @@ class TestIdePatcher(unittest.TestCase):
     """Workbench bundle patching: idempotency, dry-run, checksum, upgrades."""
 
     def setUp(self):
-        self.tmp = _tempfile.mkdtemp()
+        self.tmp = tempfile.mkdtemp()
         self.app_root = Path(self.tmp) / "resources" / "app"
         self.js_path = self.app_root / "out" / "vs" / "workbench" / "workbench.desktop.main.js"
         self.js_path.parent.mkdir(parents=True)
@@ -1290,9 +1254,8 @@ class TestIdePatcher(unittest.TestCase):
         result = uri_fix.update_product_checksum(self.app_root)
         self.assertTrue(result.success)
         self.assertTrue(result.updated)
-        import hashlib as _hashlib
         expected = base64.b64encode(
-            _hashlib.sha256(self.js_path.read_bytes()).digest()
+            hashlib.sha256(self.js_path.read_bytes()).digest()
         ).decode("ascii").rstrip("=")
         text = (self.app_root / "product.json").read_bytes().decode("utf-8")
         self.assertIn(f'"vs/workbench/workbench.desktop.main.js": "{expected}"', text)

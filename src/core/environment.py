@@ -48,12 +48,6 @@ class EnvironmentResolver:
         return paths[0]
 
     @staticmethod
-    def get_storage_json_path() -> str:
-        """Returns the OS-specific path to the IDE's storage.json (sibling of state.vscdb)."""
-        db_path = EnvironmentResolver.get_antigravity_db_path()
-        return os.path.join(os.path.dirname(db_path), "storage.json")
-
-    @staticmethod
     def get_gemini_base_path() -> str:
         """Returns the path to ~/.gemini/antigravity/ or ~/.gemini/antigravity-ide/."""
         home = os.path.expanduser("~")

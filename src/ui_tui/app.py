@@ -2,25 +2,25 @@
 MVU Application Controller — the TUI main loop.
 
 Manages the screen stack, animation-aware event loop, and terminal engine
-lifecycle. This is the central coordinator between the engine, animation
-manager, toast system, and all views.
+lifecycle. This is the central coordinator between the engine, toast
+system, screen transitions, and all views.
 
 UX Best Practices enforced:
-  - Adaptive frame rate: 30 FPS during animations, blocking input when idle
+  - Adaptive frame rate: fast polling during animations, blocking input when idle
   - Toast notifications rendered as a global overlay on every frame
-  - Animated screen transitions (slide push/pop) for spatial continuity
+  - Animated screen transitions (vertical wipe on push/pop) for spatial continuity
   - Clean shutdown guaranteed even on exceptions or signals
   - Terminal title updated to show current context
 """
 
 from __future__ import annotations
 
-import time
+import os
 
 from ..core.lifecycle import ApplicationContext
 from ..core.constants import APP_NAME, VERSION
-from .engine import TerminalEngine, Key, KeyEvent
-from .animation import AnimationManager, ScreenTransition
+from .engine import TerminalEngine
+from .animation import ScreenTransition
 from .capabilities import CAPS
 from .components import ToastManager
 from .views import (
@@ -46,7 +46,6 @@ class App:
         self.ctx = ctx
         self.engine = TerminalEngine()
         self.screen_stack: list[object] = []
-        self.animations = AnimationManager()
         self.toasts = ToastManager()
         self._transition: ScreenTransition | None = None
 
@@ -88,13 +87,9 @@ class App:
 
                 self.engine.paint(frame)
 
-                # --- Tick animations ---
-                self.animations.tick()
-
                 # --- Input ---
                 is_animating = (
-                    self.animations.is_animating
-                    or self.toasts.has_active
+                    self.toasts.has_active
                     or (self._transition is not None and not self._transition.is_complete)
                 )
 
@@ -208,7 +203,6 @@ class App:
             db_path = ":".join(parts[2:])
             return WorkspaceBrowserView(db_path)
         elif name == "storage":
-            import os
             storage_dir = os.path.dirname(self.ctx.db_path)
             return StorageBrowserView(storage_dir)
         elif name == "help":

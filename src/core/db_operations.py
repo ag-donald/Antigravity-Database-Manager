@@ -24,19 +24,18 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 import time
 import urllib.parse
+from collections import Counter
 from typing import Callable, Optional
 
-from .constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, DB_FILENAME
+from .constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, PLACEHOLDER_TITLE_PREFIX
 from .models import (
-    DatabaseSnapshot, MergeDiff, MergeResult, RestoreResult, RecoveryResult,
-    RepairResult,
+    MergeDiff, MergeResult, OpResult, RestoreResult, RecoveryResult, RepairResult,
 )
-from .db_scanner import (
-    extract_existing_metadata, extract_workspace_count, scan_database,
-    discover_backups, scan_all, list_conversations,
-)
+from .db_scanner import extract_existing_metadata, file_uri_to_path, list_conversations
+from .diagnostic import diagnose_database, GHOST_BYTES, DOUBLE_WRAP, UUID_MISMATCH
 from .protobuf import ProtobufEncoder
 from .artifacts import ArtifactParser
 
@@ -50,7 +49,6 @@ def build_workspace_dict(path: str) -> dict[str, str]:
     Constructs the standardized dictionary of workspace configuration strings
     required by the Protobuf schema (Fields 9 and 17) mapping.
     """
-    import sys
     path_normalized = path.replace("\\", "/").rstrip("/")
     if sys.platform.startswith("win") and len(path_normalized) >= 2 and path_normalized[1] == ":":
         path_normalized = path_normalized[0].lower() + path_normalized[1:]
@@ -68,6 +66,11 @@ def build_workspace_dict(path: str) -> dict[str, str]:
         "git_remote": f"https://github.com/local/{folder_name}.git",
         "branch": "main",
     }
+
+
+def placeholder_title(cid: str, prefix: str = PLACEHOLDER_TITLE_PREFIX) -> str:
+    """Fallback display title for a conversation with no stored title."""
+    return f"{prefix} {cid[:8]}"
 
 
 # ==============================================================================
@@ -113,12 +116,9 @@ def restore_backup(backup_path: str, target_path: str) -> RestoreResult:
                             error=str(exc))
 
 
-def create_empty_db(target_path: str) -> bool:
+def create_empty_db(target_path: str) -> OpResult:
     """
     Creates a new state.vscdb with the correct schema but empty ItemTable.
-
-    Returns:
-        True on success, False on failure.
     """
     conn = None
     try:
@@ -126,9 +126,9 @@ def create_empty_db(target_path: str) -> bool:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)")
         conn.commit()
-        return True
-    except Exception:
-        return False
+        return OpResult(success=True)
+    except Exception as exc:
+        return OpResult(success=False, error=str(exc))
     finally:
         if conn:
             try:
@@ -141,37 +141,12 @@ def create_empty_db(target_path: str) -> bool:
 # MERGE OPERATIONS
 # ==============================================================================
 
-def _extract_conversation_ids(db_path: str) -> set[str]:
-    """Extracts all conversation UUIDs from a database's PB blob."""
-    ids: set[str] = set()
-    conn = None
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
-        row = cur.fetchone()
-        if row and row[0]:
-            decoded = base64.b64decode(row[0])
-            _, inner_blobs = extract_existing_metadata(decoded)
-            ids = set(inner_blobs.keys())
-    except Exception:
-        pass
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    return ids
-
-
 def compute_merge_diff(source_path: str, target_path: str) -> MergeDiff:
     """Compares two databases and classifies their conversations with full metadata."""
-    source_ids = _extract_conversation_ids(source_path)
-    target_ids = _extract_conversation_ids(target_path)
-
     source_convs = {c.uuid: c for c in list_conversations(source_path)}
     target_convs = {c.uuid: c for c in list_conversations(target_path)}
+    source_ids = set(source_convs)
+    target_ids = set(target_convs)
 
     source_only_uuids = sorted(source_ids - target_ids)
     shared_uuids = sorted(source_ids & target_ids)
@@ -195,13 +170,17 @@ def compute_merge_diff(source_path: str, target_path: str) -> MergeDiff:
 
 
 def execute_merge(source_path: str, target_path: str,
-                  strategy: str = "additive") -> MergeResult:
+                  strategy: str = "additive",
+                  only_uuids: Optional[set[str]] = None) -> MergeResult:
     """
     Merges conversations from source into target.
 
     Strategies:
       - ``additive``: Only add conversations missing from target (safe).
       - ``overwrite``: Replace target entries with source entries (destructive).
+
+    ``only_uuids`` restricts the merge to those source conversations
+    (cherry-pick); ``None`` merges everything.
 
     Safety: Always creates a pre-merge backup of the target first.
     Uses SQLite ACID transactions to write directly.
@@ -250,15 +229,17 @@ def execute_merge(source_path: str, target_path: str,
         merged_json_entries = dict(tgt_json.get("entries", {}))
 
         for cid, src_blob in src_blobs.items():
+            if only_uuids is not None and cid not in only_uuids:
+                continue
             if cid not in merged_blobs:
                 merged_blobs[cid] = src_blob
-                merged_titles[cid] = src_titles.get(cid, f"Merged {cid[:8]}")
+                merged_titles[cid] = src_titles.get(cid, placeholder_title(cid, "Merged"))
                 if cid in src_json.get("entries", {}):
                     merged_json_entries[cid] = src_json["entries"][cid]
                 else:
                     merged_json_entries[cid] = {
                         "sessionId": cid,
-                        "title": merged_titles.get(cid, f"Merged {cid[:8]}"),
+                        "title": merged_titles.get(cid, placeholder_title(cid, "Merged")),
                         "lastModified": int(time.time() * 1000),
                         "isStale": False,
                     }
@@ -276,7 +257,7 @@ def execute_merge(source_path: str, target_path: str,
         # 5. Rebuild PB blob
         result_bytes = b""
         for cid, blob in merged_blobs.items():
-            title = merged_titles.get(cid, f"Conversation {cid[:8]}")
+            title = merged_titles.get(cid, placeholder_title(cid))
             entry = ProtobufEncoder.build_trajectory_entry(
                 cid, title, None, int(time.time()), int(time.time()),
                 existing_inner_data=blob,
@@ -317,119 +298,13 @@ def execute_selective_merge(source_path: str, target_path: str,
                             selected_uuids: list[str],
                             strategy: str = "additive") -> MergeResult:
     """
-    Cherry-pick merge: only merges the specified conversation UUIDs from source into target.
-    Uses the same backup-first + ACID strategy as ``execute_merge``.
+    Cherry-pick merge: only merges the specified conversation UUIDs from
+    source into target. Thin wrapper over ``execute_merge``.
     """
     if not selected_uuids:
         return MergeResult(success=True, added=0, updated=0, skipped=0)
-    backup_path = ""
-    try:
-        backup_path = create_backup(target_path, reason="before_merge")
-    except OSError as exc:
-        return MergeResult(success=False, error=f"Backup failed: {exc}")
-
-    src_conn = None
-    tgt_conn = None
-    try:
-        src_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True, timeout=5)
-        src_cur = src_conn.cursor()
-
-        src_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
-        src_pb_row = src_cur.fetchone()
-        src_pb_decoded = base64.b64decode(src_pb_row[0]) if (src_pb_row and src_pb_row[0]) else b""
-        src_titles, src_blobs = extract_existing_metadata(src_pb_decoded) if src_pb_decoded else ({}, {})
-
-        src_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
-        src_json_row = src_cur.fetchone()
-        src_json = json.loads(src_json_row[0]) if (src_json_row and src_json_row[0]) else {"version": 1, "entries": {}}
-
-        tgt_conn = sqlite3.connect(target_path, timeout=10)
-        tgt_cur = tgt_conn.cursor()
-
-        tgt_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
-        tgt_pb_row = tgt_cur.fetchone()
-        tgt_pb_decoded = base64.b64decode(tgt_pb_row[0]) if (tgt_pb_row and tgt_pb_row[0]) else b""
-        tgt_titles, tgt_blobs = extract_existing_metadata(tgt_pb_decoded) if tgt_pb_decoded else ({}, {})
-
-        tgt_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
-        tgt_json_row = tgt_cur.fetchone()
-        tgt_json = json.loads(tgt_json_row[0]) if (tgt_json_row and tgt_json_row[0]) else {"version": 1, "entries": {}}
-
-        added, updated, skipped = 0, 0, 0
-        merged_blobs = dict(tgt_blobs)
-        merged_titles = dict(tgt_titles)
-        merged_json_entries = dict(tgt_json.get("entries", {}))
-
-        selected_set = set(selected_uuids)
-
-        for cid, src_blob in src_blobs.items():
-            if cid not in selected_set:
-                continue
-
-            if cid not in merged_blobs:
-                merged_blobs[cid] = src_blob
-                merged_titles[cid] = src_titles.get(cid, f"Merged {cid[:8]}")
-                if cid in src_json.get("entries", {}):
-                    merged_json_entries[cid] = src_json["entries"][cid]
-                else:
-                    merged_json_entries[cid] = {
-                        "sessionId": cid,
-                        "title": merged_titles.get(cid, f"Merged {cid[:8]}"),
-                        "lastModified": int(time.time() * 1000),
-                        "isStale": False,
-                    }
-                added += 1
-            elif strategy == "overwrite":
-                merged_blobs[cid] = src_blob
-                if cid in src_titles:
-                    merged_titles[cid] = src_titles[cid]
-                if cid in src_json.get("entries", {}):
-                    merged_json_entries[cid] = src_json["entries"][cid]
-                updated += 1
-            else:
-                skipped += 1
-
-        result_bytes = b""
-        for cid, blob in merged_blobs.items():
-            title = merged_titles.get(cid, f"Conversation {cid[:8]}")
-            entry = ProtobufEncoder.build_trajectory_entry(
-                cid, title, None, int(time.time()), int(time.time()),
-                existing_inner_data=blob,
-            )
-            result_bytes += entry
-
-        encoded_pb = base64.b64encode(result_bytes).decode("utf-8")
-
-        tgt_cur.execute("SELECT value FROM ItemTable WHERE key=?", (PB_KEY,))
-        if tgt_cur.fetchone():
-            tgt_cur.execute("UPDATE ItemTable SET value=? WHERE key=?", (encoded_pb, PB_KEY))
-        else:
-            tgt_cur.execute("INSERT INTO ItemTable (key, value) VALUES (?, ?)", (PB_KEY, encoded_pb))
-
-        merged_json = {"version": 1, "entries": merged_json_entries}
-        tgt_cur.execute(
-            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
-            (JSON_KEY, json.dumps(merged_json, ensure_ascii=False)),
-        )
-
-        tgt_conn.commit()
-
-        return MergeResult(success=True, added=added, updated=updated,
-                          skipped=skipped, backup_path=backup_path)
-    except Exception as exc:
-        return MergeResult(success=False, error=str(exc), backup_path=backup_path)
-    finally:
-        for c in (src_conn, tgt_conn):
-            if c:
-                try:
-                    c.close()
-                except Exception:
-                    pass
-
-
-# ==============================================================================
-# TITLE RESOLUTION
-# ==============================================================================
+    return execute_merge(source_path, target_path, strategy,
+                         only_uuids=set(selected_uuids))
 
 def resolve_title(cid: str, existing_titles: dict[str, str],
                   convs_dir: str) -> tuple[str, str]:
@@ -452,7 +327,7 @@ def resolve_title(cid: str, existing_titles: dict[str, str],
         mod_time = time.strftime("%b %d", time.localtime(os.path.getmtime(target_path)))
         return f"Conversation ({mod_time}) {cid[:8]}", "fallback"
 
-    return f"Conversation {cid[:8]}", "fallback"
+    return placeholder_title(cid), "fallback"
 
 
 # ==============================================================================
@@ -552,7 +427,6 @@ def run_recovery_pipeline(
 
     # Fallback: assign dominant workspace to remaining unmapped conversations
     if ws_assignments:
-        from collections import Counter
         ws_counts = Counter(v["uri_plain"] for v in ws_assignments.values())
         if ws_counts:
             dominant_uri = ws_counts.most_common(1)[0][0]
@@ -566,14 +440,12 @@ def run_recovery_pipeline(
     # Resolve titles and build entries
     _progress("injection", "Building Protobuf entries...")
     resolved: list[tuple[str, str, str, Optional[bytes], bool]] = []
-    stats = {"preserved": 0, "fallback": 0}
 
     for cid in all_pbs:
         title, source = resolve_title(cid, existing_titles, convs_dir)
         inner_data = existing_inner_blobs.get(cid)
         has_ws = bool(inner_data and ProtobufEncoder.extract_workspace_hint(inner_data))
         resolved.append((cid, title, source, inner_data, has_ws))
-        stats[source] += 1
 
     # Phase 4: Backup — ALWAYS before any writes
     _progress("backup", "Creating safety backup...")
@@ -710,13 +582,13 @@ def get_conversation_payload(db_path: str, target_uuid: str) -> str:
     """Extracts and pretty-prints the JSON payload for a given conversation."""
     if not os.path.isfile(db_path):
         return "Database file not found."
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         cur = conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
         row = cur.fetchone()
-        conn.close()
-        
+
         if row and row[0]:
             j_obj = json.loads(row[0])
             entries = j_obj.get("entries", {})
@@ -724,14 +596,17 @@ def get_conversation_payload(db_path: str, target_uuid: str) -> str:
                 return json.dumps(entries[target_uuid], indent=2, ensure_ascii=False)
     except Exception as e:
         return f"Error reading payload: {e}"
-    
+    finally:
+        if conn:
+            conn.close()
+
     return "No JSON payload found for this conversation."
 
 
-def delete_conversation(db_path: str, conv_uuid: str) -> bool:
+def delete_conversation(db_path: str, conv_uuid: str) -> OpResult:
     """Safely removes a single conversation from PB and JSON indices."""
     if not os.path.isfile(db_path):
-        return False
+        return OpResult(success=False, error=f"Database file not found: {db_path}")
     conn = None
     try:
         create_backup(db_path, reason="before_conv_del")
@@ -761,7 +636,7 @@ def delete_conversation(db_path: str, conv_uuid: str) -> bool:
                 for cid, blob in inner_blobs.items():
                     if cid == conv_uuid:
                         continue
-                    title = titles.get(cid, f"Conversation {cid[:8]}")
+                    title = titles.get(cid, placeholder_title(cid))
                     entry = ProtobufEncoder.build_trajectory_entry(
                         cid, title, None, int(time.time()), int(time.time()), existing_inner_data=blob
                     )
@@ -771,9 +646,9 @@ def delete_conversation(db_path: str, conv_uuid: str) -> bool:
                 cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
 
         conn.commit()
-        return True
-    except Exception:
-        return False
+        return OpResult(success=True)
+    except Exception as exc:
+        return OpResult(success=False, error=str(exc))
     finally:
         if conn:
             try:
@@ -782,12 +657,12 @@ def delete_conversation(db_path: str, conv_uuid: str) -> bool:
                 pass
 
 
-def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
+def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> OpResult:
     """Safely renames a conversation in both JSON and PB indices."""
     if not os.path.isfile(db_path):
-        return False
+        return OpResult(success=False, error=f"Database file not found: {db_path}")
     if not new_title or not new_title.strip():
-        return False
+        return OpResult(success=False, error="The new title must not be empty.")
     conn = None
     try:
         create_backup(db_path, reason="before_conv_rename")
@@ -815,7 +690,7 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
             if conv_uuid in inner_blobs:
                 result_bytes = b""
                 for cid, blob in inner_blobs.items():
-                    title = new_title if cid == conv_uuid else titles.get(cid, f"Conversation {cid[:8]}")
+                    title = new_title if cid == conv_uuid else titles.get(cid, placeholder_title(cid))
                     entry = ProtobufEncoder.build_trajectory_entry(
                         cid, title, None, int(time.time()), int(time.time()), existing_inner_data=blob
                     )
@@ -825,9 +700,9 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
                 cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
 
         conn.commit()
-        return True
-    except Exception:
-        return False
+        return OpResult(success=True)
+    except Exception as exc:
+        return OpResult(success=False, error=str(exc))
     finally:
         if conn:
             try:
@@ -836,12 +711,12 @@ def rename_conversation(db_path: str, conv_uuid: str, new_title: str) -> bool:
                 pass
 
 
-def migrate_workspace(db_path: str, new_workspace_path: str) -> bool:
+def migrate_workspace(db_path: str, new_workspace_path: str) -> OpResult:
     """Migrates all conversations in the database to a new workspace path."""
     if not os.path.isfile(db_path):
-        return False
+        return OpResult(success=False, error=f"Database file not found: {db_path}")
     if not new_workspace_path or not new_workspace_path.strip():
-        return False
+        return OpResult(success=False, error="The workspace path must not be empty.")
     conn = None
     try:
         create_backup(db_path, reason="before_ws_migrate")
@@ -860,7 +735,7 @@ def migrate_workspace(db_path: str, new_workspace_path: str) -> bool:
             result_bytes = b""
 
             for cid, blob in inner_blobs.items():
-                title = titles.get(cid, f"Conversation {cid[:8]}")
+                title = titles.get(cid, placeholder_title(cid))
                 entry = ProtobufEncoder.build_trajectory_entry(
                     cid, title, ws_map, int(time.time()), int(time.time()), existing_inner_data=blob
                 )
@@ -870,10 +745,12 @@ def migrate_workspace(db_path: str, new_workspace_path: str) -> bool:
             cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
 
             conn.commit()
+            return OpResult(success=True)
 
-        return True
-    except Exception:
-        return False
+        return OpResult(success=False,
+                        error="No trajectorySummaries index found in this database.")
+    except Exception as exc:
+        return OpResult(success=False, error=str(exc))
     finally:
         if conn:
             try:
@@ -902,8 +779,6 @@ def repair_database(db_path: str) -> RepairResult:
     """
     if not os.path.isfile(db_path):
         return RepairResult(success=False, error="Database file not found")
-
-    from .diagnostic import diagnose_database, GHOST_BYTES, DOUBLE_WRAP, UUID_MISMATCH
 
     # Run diagnosis first
     report = diagnose_database(db_path)
@@ -996,17 +871,20 @@ def repair_database(db_path: str) -> RepairResult:
             stats["preserved"] += 1
 
     # Write repaired blob
+    wconn = None
     try:
         encoded_pb = base64.b64encode(repaired_bytes).decode("utf-8")
         wconn = sqlite3.connect(db_path, timeout=10)
         wcur = wconn.cursor()
         wcur.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (encoded_pb, PB_KEY))
         wconn.commit()
-        wconn.close()
     except Exception as exc:
         _safe_rollback(backup_path, db_path)
         return RepairResult(success=False, error=f"Write failed (rolled back): {exc}",
                             backup_path=backup_path)
+    finally:
+        if wconn:
+            wconn.close()
 
     return RepairResult(
         success=True,
@@ -1186,11 +1064,7 @@ def _extract_workspace_uri_from_field9(ws_msg: bytes) -> str:
                 if fn == 1:
                     uri = content.decode('utf-8', errors='ignore')
                     if uri.startswith('file:///'):
-                        # Decode the URI to get an OS path
-                        import urllib.parse
-                        raw = uri.replace('file:///', '')
-                        decoded_path = urllib.parse.unquote(raw)
-                        return decoded_path
+                        return file_uri_to_path(uri)
             elif wt == 0:
                 _, pos = ProtobufEncoder.decode_varint(ws_msg, pos)
             elif wt == 1:

@@ -74,13 +74,11 @@ src/
 │   └── lifecycle.py
 ├── ui_tui/                       ← Full-screen terminal UI
 │   ├── capabilities.py           ← Terminal capability detection
-│   ├── theme/                    ← Semantic colors, styles, gradients, icons
-│   ├── events.py                 ← Event bus, key bindings, focus management
-│   ├── core.py                   ← Component base, layout engine
+│   ├── theme/                    ← Semantic colors, styles, borders, icons
+│   ├── core.py                   ← ANSI-aware text utilities, Component base
 │   ├── components.py             ← Reusable UI components
-│   ├── animation.py              ← Easing, animated values, transitions
+│   ├── animation.py              ← Screen-transition easing
 │   ├── engine.py                 ← Double-buffered terminal I/O
-│   ├── widgets.py                ← Composite panels (health report, diagnostics, …)
 │   ├── app.py                    ← Application event loop
 │   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
 └── ui_headless/                  ← CLI parser and interactive menus
@@ -88,8 +86,8 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (94 tests)
-└── test_tui.py                   ← TUI framework tests (113 tests)
+├── test_core.py                  ← Core logic tests (91 tests)
+└── test_tui.py                   ← TUI framework tests (50 tests)
 ```
 
 See [README.md](README.md) for usage, recovery behavior, and CLI reference.

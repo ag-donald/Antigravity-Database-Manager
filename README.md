@@ -48,7 +48,7 @@ The underlying conversation data files (`.pb` in older IDE versions, SQLite `.db
 
 ### Community Bug Reports
 
-This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **11 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
+This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **12 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
 
 📋 **[Full Bug Catalog → BUGS_RESEARCH.md](BUGS_RESEARCH.md)**
 
@@ -65,6 +65,7 @@ This is a **widely reported issue** across the Google AI Developers Forum, Reddi
 | 9 | Ghost Bytes / Double-Wrapping | Encoding corruption in Protobuf blob |
 | 10 | storage.json Desync | Parallel data stores fall out of sync |
 | 11 | Scratch Session Disabled | Workspace-less conversations hidden after upgrade |
+| 12 | Windows URI Encoding Mismatch | Raw vs percent-encoded drive-letter colons break workspace association |
 
 ### Root Cause
 
@@ -166,13 +167,11 @@ src/
 │   └── lifecycle.py
 ├── ui_tui/                       ← Full-screen terminal UI
 │   ├── capabilities.py           ← Terminal capability detection
-│   ├── theme/                    ← Semantic colors, styles, gradients, icons
-│   ├── events.py                 ← Event bus, key bindings, focus management
-│   ├── core.py                   ← Component base, layout engine
+│   ├── theme/                    ← Semantic colors, styles, borders, icons
+│   ├── core.py                   ← ANSI-aware text utilities, Component base
 │   ├── components.py             ← Reusable UI components
-│   ├── animation.py              ← Easing, animated values, transitions
+│   ├── animation.py              ← Screen-transition easing
 │   ├── engine.py                 ← Double-buffered terminal I/O
-│   ├── widgets.py                ← Composite panels (health report, diagnostics, …)
 │   ├── app.py                    ← Application event loop
 │   └── views.py                  ← Eight screens (home, browse, recovery, merge, …)
 └── ui_headless/                  ← CLI parser and interactive menus
@@ -180,8 +179,8 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (94 tests)
-└── test_tui.py                   ← TUI framework tests (113 tests)
+├── test_core.py                  ← Core logic tests (91 tests)
+└── test_tui.py                   ← TUI framework tests (50 tests)
 ```
 
 ### Recovery Pipeline Phases

@@ -40,30 +40,13 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 from .constants import PB_KEY
+from .db_operations import create_backup
+from .db_scanner import canonicalize_drive_uri, extract_existing_metadata
 from .models import IdePatchResult, ProductChecksumResult, UriNormalizeResult
 from .protobuf import ProtobufEncoder
-
-
-# ==============================================================================
-# CANONICAL URI FORM
-# ==============================================================================
-
-# Anchored: these fields hold a single URI, so embedded occurrences are never
-# rewritten. Matches raw ':' and both hex cases of the percent-encoded colon.
-_DRIVE_URI_RE = re.compile(r"^file:///([A-Za-z])(:|%3[Aa])(?=/|$)")
-
-
-def canonicalize_drive_uri(uri: str) -> str:
-    """
-    Normalizes a ``file:///`` URI's Windows drive-letter separator to the
-    canonical frontend form: lowercase letter + uppercase-hex ``%3A``
-    (``file:///C:/x`` / ``file:///c%3a/x`` -> ``file:///c%3A/x``).
-
-    URIs without a drive letter (macOS/Linux paths) are returned unchanged.
-    """
-    return _DRIVE_URI_RE.sub(lambda m: f"file:///{m.group(1).lower()}%3A", uri)
 
 
 # ==============================================================================
@@ -74,6 +57,13 @@ def canonicalize_drive_uri(uri: str) -> str:
 # bias: any structural anomaly raises, and the caller preserves the original
 # bytes untouched.
 # ==============================================================================
+
+def _backup_file(path: Path) -> Path:
+    """Creates a timestamped sibling backup of an IDE file before modifying it."""
+    backup = path.with_name(f"{path.name}.agmercium_urifix_{int(time.time())}")
+    shutil.copy2(path, backup)
+    return backup
+
 
 class _EntryParseError(Exception):
     """Raised when a Protobuf structure cannot be walked with certainty."""
@@ -131,17 +121,15 @@ def _skip_value(data: bytes, pos: int, wire_type: int) -> int:
 # SURGICAL BLOB NORMALIZATION (Step: state.vscdb)
 # ==============================================================================
 
-# The encoded-URI fields per docs/schema.proto: WorkspaceInfo.primary_uri /
-# secondary_uri (9.1/9.2) and SessionContext.workspace_uri_encoded (17.7).
-# Field 17.1 (SessionWorkspace) deliberately holds plain URIs and is never
-# rewritten here.
-_FIELD9_URI_SUBS = frozenset({1, 2})
-_FIELD17_URI_SUBS = frozenset({7})
-
-
-def _rewrite_uri_strings(message: bytes, uri_fields: frozenset[int]) -> tuple[bytes, bool]:
-    """Rewrites the string values of the given sub-field numbers through
-    ``canonicalize_drive_uri()``; every other sub-field is copied verbatim."""
+def _rewrite_message(message: bytes,
+                     handlers: dict[int, Callable[[bytes], tuple[bytes, bool]]]) -> tuple[bytes, bool]:
+    """
+    Walks a Protobuf message, passing the payload of each length-delimited
+    field whose number appears in ``handlers`` through its handler and
+    copying every other field verbatim. A handled field is re-encoded only
+    when its handler reports a change; any structural anomaly raises
+    ``_EntryParseError`` so the caller can keep the original bytes instead.
+    """
     out = bytearray()
     changed = False
     pos = 0
@@ -150,14 +138,11 @@ def _rewrite_uri_strings(message: bytes, uri_fields: frozenset[int]) -> tuple[by
         field_num, wire_type, pos = _read_tag(message, pos)
         if wire_type == 2:
             payload, pos = _read_len_payload(message, pos)
-            if field_num in uri_fields:
-                try:
-                    text = payload.decode("utf-8", errors="strict")
-                except UnicodeDecodeError as exc:
-                    raise _EntryParseError(f"URI field is not UTF-8: {exc}") from exc
-                fixed = canonicalize_drive_uri(text)
-                if fixed != text:
-                    out += ProtobufEncoder.write_string_field(field_num, fixed)
+            handler = handlers.get(field_num)
+            if handler is not None:
+                new_payload, ch = handler(payload)
+                if ch:
+                    out += ProtobufEncoder.write_bytes_field(field_num, new_payload)
                     changed = True
                     continue
             out += message[start:pos]
@@ -167,85 +152,54 @@ def _rewrite_uri_strings(message: bytes, uri_fields: frozenset[int]) -> tuple[by
     return bytes(out), changed
 
 
+def _canonicalize_uri_payload(payload: bytes) -> tuple[bytes, bool]:
+    """Handler for a URI string field: canonicalizes the drive-letter form."""
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise _EntryParseError(f"URI field is not UTF-8: {exc}") from exc
+    fixed = canonicalize_drive_uri(text)
+    if fixed == text:
+        return payload, False
+    return fixed.encode("utf-8"), True
+
+
 def _transform_inner(inner: bytes) -> tuple[bytes, bool]:
-    """Rewrites the URI strings inside Fields 9 and 17 of a TrajectoryPayload;
-    all other fields (title, counts, timestamps, steps, ...) pass through
-    verbatim."""
-    out = bytearray()
-    changed = False
-    pos = 0
-    while pos < len(inner):
-        start = pos
-        field_num, wire_type, pos = _read_tag(inner, pos)
-        if wire_type == 2:
-            payload, pos = _read_len_payload(inner, pos)
-            if field_num == 9:
-                new_payload, ch = _rewrite_uri_strings(payload, _FIELD9_URI_SUBS)
-            elif field_num == 17:
-                new_payload, ch = _rewrite_uri_strings(payload, _FIELD17_URI_SUBS)
-            else:
-                new_payload, ch = payload, False
-            if ch:
-                out += ProtobufEncoder.write_bytes_field(field_num, new_payload)
-                changed = True
-            else:
-                out += inner[start:pos]
-        else:
-            pos = _skip_value(inner, pos, wire_type)
-            out += inner[start:pos]
-    return bytes(out), changed
+    """
+    Rewrites the URI strings inside Fields 9 and 17 of a TrajectoryPayload;
+    every other field (title, counts, timestamps, steps, ...) passes through
+    verbatim. Per docs/schema.proto the encoded-URI fields are
+    WorkspaceInfo.primary_uri/secondary_uri (9.1/9.2) and
+    SessionContext.workspace_uri_encoded (17.7); Field 17.1
+    (SessionWorkspace) deliberately holds plain URIs and is never rewritten.
+    """
+    return _rewrite_message(inner, {
+        9: lambda payload: _rewrite_message(payload, {1: _canonicalize_uri_payload,
+                                                      2: _canonicalize_uri_payload}),
+        17: lambda payload: _rewrite_message(payload, {7: _canonicalize_uri_payload}),
+    })
 
 
-def _transform_wrapper(wrapper: bytes) -> tuple[bytes, bool]:
-    """Transforms the Base64-encoded inner payload held in the wrapper's
-    Field 1; the Base64 is re-encoded only when the inner payload changed."""
-    out = bytearray()
-    changed = False
-    pos = 0
-    while pos < len(wrapper):
-        start = pos
-        field_num, wire_type, pos = _read_tag(wrapper, pos)
-        if wire_type == 2:
-            payload, pos = _read_len_payload(wrapper, pos)
-            if field_num == 1:
-                try:
-                    inner = base64.b64decode(payload, validate=True)
-                except Exception as exc:
-                    raise _EntryParseError(f"inner payload is not valid Base64: {exc}") from exc
-                new_inner, ch = _transform_inner(inner)
-                if ch:
-                    out += ProtobufEncoder.write_bytes_field(1, base64.b64encode(new_inner))
-                    changed = True
-                    continue
-            out += wrapper[start:pos]
-        else:
-            pos = _skip_value(wrapper, pos, wire_type)
-            out += wrapper[start:pos]
-    return bytes(out), changed
+def _transform_inner_b64(payload: bytes) -> tuple[bytes, bool]:
+    """Handler for the wrapper's Field 1: the Base64-encoded inner payload,
+    re-encoded only when the inner payload changed."""
+    try:
+        inner = base64.b64decode(payload, validate=True)
+    except Exception as exc:
+        raise _EntryParseError(f"inner payload is not valid Base64: {exc}") from exc
+    new_inner, changed = _transform_inner(inner)
+    if not changed:
+        return payload, False
+    return base64.b64encode(new_inner), True
 
 
 def _transform_entry_fields(entry: bytes) -> tuple[bytes, bool]:
-    """Transforms an entry (Field 1: uuid, Field 2: wrapper); the uuid and
-    any unrecognized sibling fields are copied verbatim."""
-    out = bytearray()
-    changed = False
-    pos = 0
-    while pos < len(entry):
-        start = pos
-        field_num, wire_type, pos = _read_tag(entry, pos)
-        if wire_type == 2:
-            payload, pos = _read_len_payload(entry, pos)
-            if field_num == 2:
-                new_wrapper, ch = _transform_wrapper(payload)
-                if ch:
-                    out += ProtobufEncoder.write_bytes_field(2, new_wrapper)
-                    changed = True
-                    continue
-            out += entry[start:pos]
-        else:
-            pos = _skip_value(entry, pos, wire_type)
-            out += entry[start:pos]
-    return bytes(out), changed
+    """Transforms an entry (Field 1: uuid, Field 2: wrapper holding the
+    Base64 inner payload); the uuid and any unrecognized sibling fields are
+    copied verbatim."""
+    return _rewrite_message(entry, {
+        2: lambda wrapper: _rewrite_message(wrapper, {1: _transform_inner_b64}),
+    })
 
 
 def _transform_entry_payload(payload: bytes) -> tuple[bytes, bool]:
@@ -352,7 +306,6 @@ def normalize_database(db_path: str, dry_run: bool = False) -> UriNormalizeResul
                                       entries_changed=0, entries_preserved_unparsed=preserved)
 
         # Identity check: the rewrite must not add, drop, or retitle anything.
-        from .db_scanner import extract_existing_metadata
         titles_before, blobs_before = extract_existing_metadata(raw)
         titles_after, blobs_after = extract_existing_metadata(new_blob)
         if set(blobs_before) != set(blobs_after) or titles_before != titles_after:
@@ -368,7 +321,6 @@ def normalize_database(db_path: str, dry_run: bool = False) -> UriNormalizeResul
                                       entries_changed=changed,
                                       entries_preserved_unparsed=preserved)
 
-        from .db_operations import create_backup
         backup_path = create_backup(db_path, reason="uri_fix")
 
         cur.execute("UPDATE ItemTable SET value = ? WHERE key = ?",
@@ -561,9 +513,8 @@ def patch_workbench_js(app_root: Path, dry_run: bool = False) -> IdePatchResult:
     backup_path = ""
     if applied or upgraded or needs_norm_def:
         if not dry_run:
-            backup = js_path.with_name(f"{js_path.name}.agmercium_urifix_{int(time.time())}")
             try:
-                shutil.copy2(js_path, backup)
+                backup = _backup_file(js_path)
                 js_path.write_bytes(content.encode("utf-8"))
             except OSError as exc:
                 return IdePatchResult(success=False, js_path=str(js_path),
@@ -625,9 +576,8 @@ def update_product_checksum(app_root: Path, dry_run: bool = False) -> ProductChe
                                      note=f"Would update checksum to {checksum[:24]}...")
 
     new_text = _CHECKSUM_KEY_RE.sub(lambda m: m.group(1) + checksum + m.group(3), text, count=1)
-    backup = product_path.with_name(f"{product_path.name}.agmercium_urifix_{int(time.time())}")
     try:
-        shutil.copy2(product_path, backup)
+        backup = _backup_file(product_path)
         product_path.write_bytes(new_text.encode("utf-8"))
     except OSError as exc:
         return ProductChecksumResult(success=False,

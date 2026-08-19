@@ -17,13 +17,7 @@ class Icons:
     """
     # Navigation
     POINTER     = "▸"
-    POINTER_DBL = "▶"
-    ARROW_UP    = "↑"
-    ARROW_DOWN  = "↓"
-    ARROW_LEFT  = "←"
-    ARROW_RIGHT = "→"
     CHEVRON_R   = "›"
-    CHEVRON_D   = "▾"
 
     # Status
     CHECK       = "✓"
@@ -35,26 +29,11 @@ class Icons:
     DIAMOND     = "◆"
 
     # Progress
-    BLOCK_FULL  = "█"
-    BLOCK_3_4   = "▓"
-    BLOCK_HALF  = "▒"
-    BLOCK_1_4   = "░"
 
     # Data
-    FOLDER      = "📁"
-    FILE        = "📄"
-    DATABASE    = "🗄"
-    KEY         = "🔑"
-    LOCK        = "🔒"
-    UNLOCK      = "🔓"
 
     # Spinners (frame sequences)
     SPINNER_DOTS    = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
-    SPINNER_LINE    = ("—", "\\", "|", "/")
-    SPINNER_ARC     = ("◜", "◠", "◝", "◞", "◡", "◟")
-    SPINNER_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-    SPINNER_PULSE   = ("○", "◔", "◑", "◕", "●", "◕", "◑", "◔")
-    SPINNER_BOUNCE  = ("⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈")
 
 
 class Glyphs:
@@ -65,24 +44,9 @@ class Glyphs:
     data visualization provides instant visual meaning.
     """
     # Horizontal bar (8 levels)
-    BAR_H = (" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█")
     # Vertical bar (8 levels)
-    BAR_V = (" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█")
     # Gauge segments
-    GAUGE_EMPTY   = "○"
-    GAUGE_QUARTER = "◔"
-    GAUGE_HALF    = "◑"
-    GAUGE_THREE_Q = "◕"
-    GAUGE_FULL    = "●"
     # Scrollbar
-    SCROLL_TRACK  = "│"
-    SCROLL_THUMB  = "┃"
-    SCROLL_UP     = "▲"
-    SCROLL_DOWN   = "▼"
     # Separators
-    THIN_H        = "─"
     THICK_H       = "━"
-    DOUBLE_H      = "═"
     # Toggle
-    TOGGLE_ON     = "◉"
-    TOGGLE_OFF    = "○"
