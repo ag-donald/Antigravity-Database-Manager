@@ -161,6 +161,8 @@ src/
 │   ├── artifacts.py
 │   ├── db_scanner.py
 │   ├── db_operations.py
+│   ├── conversation_store.py     ← New-generation conversation DB reader (read-only)
+│   ├── summaries_repair.py       ← Hub summaries cache rebuild via language server RPC
 │   ├── diagnostic.py
 │   ├── storage_manager.py
 │   ├── uri_fix.py
@@ -179,7 +181,7 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (91 tests)
+├── test_core.py                  ← Core logic tests (119 tests)
 └── test_tui.py                   ← TUI framework tests (50 tests)
 ```
 
@@ -209,9 +211,11 @@ The resolver prefers whichever path exists on disk, defaulting to the active `An
 
 Raw conversation data is resolved the same way on all platforms: the modern `~/.gemini/antigravity-ide/` directory is preferred when it exists, with the legacy `~/.gemini/antigravity/` directory as a fallback. Both the older Protobuf (`.pb`) and the newest SQLite (`.db`) conversation formats are supported.
 
+> **Newest IDE generation:** the very latest builds create **no `state.vscdb` at all** — every conversation is a self-contained database carrying its own metadata. For those installations `recover` is not applicable; run `inspect` for a read-only health view of the conversation store.
+
 - **Python:** 3.10+
 - **Dependencies:** None (standard library only)
-- **Current version:** 8.8.0
+- **Current version:** 8.9.0
 
 ---
 
@@ -413,7 +417,7 @@ python antigravity_database_manager.py repair
 python antigravity_database_manager.py repair --target path.vscdb
 ```
 
-Auto-fixes corruptions found by `diagnose`. Creates a backup first.
+On legacy installs, auto-fixes corruptions found by `diagnose` (creates a backup first). On new-generation installs (no `state.vscdb`), it instead rebuilds the Hub summaries cache: the sidebar of the newest IDE reads `agyhub_summaries_proto.pb`, which a crash can zero out while the server never rebuilds it — intact conversation databases then vanish from the sidebar ("no conversations yet"). `repair` re-writes every missing summary via the running language server's `JetboxWriteSummary` RPC, so the IDE must be open; the sidebar updates live and conversation databases are never touched.
 
 #### `fix-uris` — Workspace URI Encoding Fix (Bug #12)
 
@@ -482,6 +486,15 @@ python antigravity_database_manager.py storage patch "key.path" "value"
 python antigravity_database_manager.py storage delete "key.path"
 ```
 
+#### `inspect` — New-Generation Conversation Store (Read-Only)
+
+```bash
+python antigravity_database_manager.py inspect
+python antigravity_database_manager.py inspect --json
+```
+
+The newest IDE builds no longer maintain a central `state.vscdb` index — each conversation is a self-contained SQLite database under `~/.gemini/antigravity[-ide]/conversations/<uuid>.db` that carries its own metadata (workspace, git remote, project id, cascade id), and the IDE keeps copies in a `conversations_backup/` directory next to it. `inspect` detects which data generation is installed, lists every conversation database with step counts and workspace/git bindings (backup copies flagged), and warns about conversations missing a cascade id — the new generation's invisible-history signal. Fully read-only; the legacy `recover` pipeline does not apply to this generation.
+
 ---
 
 ### Global Flags
@@ -490,7 +503,7 @@ python antigravity_database_manager.py storage delete "key.path"
 |------|-------------|
 | `--headless` | Force headless interactive mode (no TUI) |
 | `--db-path` | Override the default `state.vscdb` location |
-| `--json` | JSON output (supported on `scan`, `recover`, `health`, `diagnose`, `conversations list`, `workspace list`, `storage inspect`) |
+| `--json` | JSON output (supported on `scan`, `recover`, `health`, `diagnose`, `inspect`, `conversations list`, `workspace list`, `storage inspect`) |
 | `--version` / `-v` | Display version number |
 | `--help` / `-h` | Display help |
 
