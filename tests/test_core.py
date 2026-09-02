@@ -373,6 +373,52 @@ class TestBackupRestore(unittest.TestCase):
         backups = scanner.discover_backups(self.tmpdir)
         self.assertEqual(len(backups), 2)
 
+    def test_create_backup_missing_db_raises_clear_error(self):
+        """create_backup on a missing DB must raise a clear error, not WinError 3."""
+        missing = os.path.join(self.tmpdir, "missing_dir", "state.vscdb")
+        with self.assertRaises(FileNotFoundError) as ctx:
+            ops.create_backup(missing, reason="test")
+        self.assertIn("Database not found", str(ctx.exception))
+
+    def test_recovery_pipeline_missing_db_clear_error(self):
+        """run_recovery_pipeline must fail fast with a clear message when the DB is missing."""
+        convs_dir = os.path.join(self.tmpdir, "conversations")
+        os.makedirs(convs_dir, exist_ok=True)
+        Path(convs_dir, "conv-a.pb").touch()
+        missing_db = os.path.join(self.tmpdir, "missing_dir", "state.vscdb")
+
+        result = ops.run_recovery_pipeline(missing_db, convs_dir, self.tmpdir)
+
+        self.assertFalse(result.success)
+        self.assertIn("Database not found", result.error)
+
+
+# ==============================================================================
+# TEST: ENVIRONMENT RESOLUTION
+# ==============================================================================
+
+class TestEnvironmentResolution(unittest.TestCase):
+    """Tests for OS path candidates and process detection robustness."""
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "Windows-specific candidates")
+    def test_windows_candidates_include_bare_antigravity(self):
+        """Newer IDE builds use 'Antigravity' (no suffix) under APPDATA — must be a candidate."""
+        from src.core.environment import EnvironmentResolver
+        paths = EnvironmentResolver.get_antigravity_db_paths()
+        expected_suffix = os.path.join("Antigravity", "User", "globalStorage", "state.vscdb")
+        self.assertTrue(any(p.endswith(expected_suffix) for p in paths),
+                        f"No bare-'Antigravity' candidate in: {paths}")
+
+    def test_is_antigravity_running_decodes_output_lossily(self):
+        """Process detection must never crash on non-cp1252 bytes in tasklist/ps output."""
+        from unittest import mock
+        from src.core import environment
+
+        with mock.patch.object(environment.subprocess, "run") as fake_run:
+            fake_run.return_value.stdout = ""
+            environment.EnvironmentResolver.is_antigravity_running()
+            self.assertEqual(fake_run.call_args.kwargs.get("errors"), "replace")
+
 
 # ==============================================================================
 # TEST: CONVERSATION OPERATIONS
@@ -1279,6 +1325,422 @@ class TestIdePatcher(unittest.TestCase):
         self.assertEqual(uri_fix.resolve_app_root(str(install_dir)), self.app_root)
         self.assertEqual(uri_fix.resolve_app_root(str(self.app_root)), self.app_root)
         self.assertIsNone(uri_fix.resolve_app_root(os.path.join(self.tmp, "missing")))
+
+
+# ==============================================================================
+# TEST: NEW-GENERATION CONVERSATION STORE
+# ==============================================================================
+
+def _create_conversation_db(path: str, trajectory_id: str = "traj-1",
+                            cascade_id: str = "conv-1", blob: bytes | None = None,
+                            n_steps: int = 0, include_meta: bool = True) -> None:
+    """Builds a synthetic new-generation conversation SQLite DB."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    if include_meta:
+        cur.execute(
+            "CREATE TABLE trajectory_meta (trajectory_id text, cascade_id text, "
+            "trajectory_type integer, source integer, PRIMARY KEY (trajectory_id))"
+        )
+        cur.execute("INSERT INTO trajectory_meta VALUES (?,?,4,1)", (trajectory_id, cascade_id))
+    cur.execute("CREATE TABLE steps (idx integer PRIMARY KEY)")
+    for i in range(n_steps):
+        cur.execute("INSERT INTO steps VALUES (?)", (i,))
+    if blob is not None:
+        cur.execute("CREATE TABLE trajectory_metadata_blob (id text PRIMARY KEY, data blob)")
+        cur.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (sqlite3.Binary(blob),))
+    conn.commit()
+    conn.close()
+
+
+def _build_metadata_blob(cascade_id: str = "conv-1", project_id: str = "proj-1") -> bytes:
+    """Builds a trajectory_metadata_blob mirroring the IDE's observed wire format."""
+    git_inner = (
+        ProtobufEncoder.write_string_field(1, "Elvis33LE/purr-tower")
+        + ProtobufEncoder.write_string_field(2, "https://github.com/Elvis33LE/purr-tower.git")
+    )
+    ws_container = (
+        ProtobufEncoder.write_string_field(1, "file:///c:/PROJECTS/purr_tower")
+        + ProtobufEncoder.write_string_field(2, "file:///c:/PROJECTS/purr_tower")
+        + ProtobufEncoder.write_bytes_field(3, git_inner)
+        + ProtobufEncoder.write_string_field(4, "feat/r1-scene-rebuild")
+    )
+    return (
+        ProtobufEncoder.write_bytes_field(1, ws_container)
+        + ProtobufEncoder.write_timestamp(2, 1756800000, 999)
+        + ProtobufEncoder.write_string_field(3, "eeeb10bf-dcc7-4a60-94fc-addaa7eb888e")
+        + ProtobufEncoder.write_string_field(6, cascade_id)
+        + ProtobufEncoder.write_string_field(7, "file:///c%3A/PROJECTS/purr_tower")
+        + ProtobufEncoder.write_bytes_field(15, b"\x08\x01\x10\x02")
+        + ProtobufEncoder.write_string_field(18, project_id)
+        + ProtobufEncoder.write_string_field(99, "unknown-field")
+    )
+
+
+class TestConversationStore(unittest.TestCase):
+    """Tests for the new-generation conversation DB reader (read-only)."""
+
+    def setUp(self):
+        from src.core import conversation_store as store
+        self.store = store
+        self.tmpdir = tempfile.mkdtemp()
+        self.gem_base = os.path.join(self.tmpdir, "antigravity")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _db_path(self, subdir: str = "conversations", name: str = "conv-1.db") -> str:
+        d = os.path.join(self.gem_base, subdir)
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, name)
+
+    def test_read_parses_trajectory_meta_and_step_count(self):
+        """read_conversation_db extracts trajectory_meta and step count."""
+        path = self._db_path()
+        _create_conversation_db(path, trajectory_id="traj-abc", cascade_id="conv-xyz", n_steps=7)
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNone(rec.error)
+        self.assertEqual(rec.trajectory_id, "traj-abc")
+        self.assertEqual(rec.cascade_id, "conv-xyz")
+        self.assertEqual(rec.trajectory_type, 4)
+        self.assertEqual(rec.source, 1)
+        self.assertEqual(rec.step_count, 7)
+
+    def test_read_parses_metadata_blob_fields(self):
+        """The metadata blob's workspace, git, timestamp, cascade and project fields parse."""
+        path = self._db_path()
+        _create_conversation_db(path, blob=_build_metadata_blob(cascade_id="blob-conv"))
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNone(rec.error)
+        self.assertEqual(rec.workspace_uris,
+                         ("file:///c:/PROJECTS/purr_tower", "file:///c:/PROJECTS/purr_tower"))
+        self.assertEqual(rec.workspace_uri_encoded, "file:///c%3A/PROJECTS/purr_tower")
+        self.assertEqual(rec.git_owner_repo, "Elvis33LE/purr-tower")
+        self.assertEqual(rec.git_remote, "https://github.com/Elvis33LE/purr-tower.git")
+        self.assertEqual(rec.git_branch, "feat/r1-scene-rebuild")
+        self.assertEqual(rec.timestamp_seconds, 1756800000)
+        self.assertEqual(rec.timestamp_nanos, 999)
+        self.assertEqual(rec.project_id, "proj-1")
+
+    def test_blob_summary_and_unknown_fields_skipped(self):
+        """Field 15 (step summaries) and unknown fields are skipped without effect."""
+        path = self._db_path()
+        _create_conversation_db(path, blob=_build_metadata_blob())
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNone(rec.error)
+        self.assertNotEqual(rec.project_id, "")
+        self.assertEqual(rec.step_count, 0)
+
+    def test_missing_metadata_blob_tolerated(self):
+        """A DB without trajectory_metadata_blob parses with defaults and no error."""
+        path = self._db_path()
+        _create_conversation_db(path, blob=None)
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNone(rec.error)
+        self.assertEqual(rec.workspace_uris, ())
+        self.assertEqual(rec.project_id, "")
+
+    def test_garbage_blob_tolerated(self):
+        """A corrupt metadata blob degrades to defaults instead of raising."""
+        path = self._db_path()
+        _create_conversation_db(path, blob=b"\xff\xff\xff\xff\xff\xff")
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNone(rec.error)
+        self.assertEqual(rec.workspace_uris, ())
+
+    def test_missing_trajectory_meta_sets_error(self):
+        """A DB lacking the trajectory_meta table records a health signal in error."""
+        path = self._db_path()
+        _create_conversation_db(path, include_meta=False)
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNotNone(rec.error)
+
+    def test_not_a_sqlite_file_sets_error(self):
+        """A non-SQLite file records an error instead of raising."""
+        path = self._db_path()
+        with open(path, "wb") as fh:
+            fh.write(b"this is not a database")
+
+        rec = self.store.read_conversation_db(path)
+
+        self.assertIsNotNone(rec.error)
+
+    def test_list_skips_sidecars_and_non_db(self):
+        """list_conversation_dbs only returns .db files, never -shm/-wal sidecars."""
+        convs = os.path.join(self.gem_base, "conversations")
+        os.makedirs(convs)
+        for name in ("a.db", "a.db-wal", "a.db-shm", "b.pb", "x.txt"):
+            with open(os.path.join(convs, name), "wb") as fh:
+                fh.write(b"")
+
+        result = self.store.list_conversation_dbs(self.gem_base)
+
+        self.assertEqual(result, [os.path.join(convs, "a.db")])
+
+    def test_list_missing_dirs_returns_empty(self):
+        """A gem base without conversation directories yields an empty list."""
+        self.assertEqual(self.store.list_conversation_dbs(self.gem_base), [])
+
+    def test_collect_marks_backups(self):
+        """collect_conversations lists live DBs before backups and flags is_backup."""
+        live = self._db_path("conversations", "same.db")
+        backup = self._db_path("conversations_backup", "same.db")
+        _create_conversation_db(live)
+        _create_conversation_db(backup)
+
+        records = self.store.collect_conversations(self.gem_base)
+
+        self.assertEqual([r.path for r in records], [live, backup])
+        self.assertFalse(records[0].is_backup)
+        self.assertTrue(records[1].is_backup)
+
+    def test_read_is_truly_read_only(self):
+        """Reading a DB must not leave journal or WAL sidecars behind."""
+        path = self._db_path()
+        _create_conversation_db(path, n_steps=3)
+
+        self.store.read_conversation_db(path)
+
+        leftovers = [n for n in os.listdir(os.path.dirname(path))
+                     if n.endswith(("-journal", "-wal", "-shm"))]
+        self.assertEqual(leftovers, [])
+
+    def test_detect_generation_new(self):
+        """Without state.vscdb but with conversation DBs the generation is 'new'."""
+        from unittest import mock
+        from src.core.environment import EnvironmentResolver
+        _create_conversation_db(self._db_path())
+        with mock.patch.object(EnvironmentResolver, "get_antigravity_db_paths",
+                               staticmethod(lambda: [os.path.join(self.tmpdir, "none.vscdb")])), \
+             mock.patch.object(EnvironmentResolver, "get_gemini_base_paths",
+                               staticmethod(lambda: [self.gem_base])):
+            self.assertEqual(self.store.detect_generation(), "new")
+
+    def test_detect_generation_legacy(self):
+        """An existing state.vscdb candidate marks the legacy generation."""
+        from unittest import mock
+        from src.core.environment import EnvironmentResolver
+        legacy_db = os.path.join(self.tmpdir, "state.vscdb")
+        with open(legacy_db, "wb") as fh:
+            fh.write(b"")
+        with mock.patch.object(EnvironmentResolver, "get_antigravity_db_paths",
+                               staticmethod(lambda: [legacy_db]), create=True):
+            self.assertEqual(self.store.detect_generation(), "legacy")
+
+
+class TestInspectCommandGrammar(unittest.TestCase):
+    """Grammar registration for the 'inspect' subcommand."""
+
+    def test_parser_registers_inspect(self):
+        """parse_args accepts 'inspect' and its --json flag."""
+        from src.ui_headless.cli_parser import parse_args
+        args = parse_args(["inspect"])
+        self.assertEqual(args.command, "inspect")
+        args_json = parse_args(["inspect", "--json"])
+        self.assertTrue(args_json.json)
+
+    def test_json_flag_works_before_and_after_subcommand(self):
+        """--json parses in both positions for every documented subcommand."""
+        from src.ui_headless.cli_parser import parse_args
+        self.assertTrue(parse_args(["health", "--json"]).json)
+        self.assertTrue(parse_args(["--json", "health"]).json)
+        self.assertFalse(parse_args(["health"]).json)
+        self.assertTrue(parse_args(["conversations", "list", "--json"]).json)
+
+
+class TestLegacyMissingNotice(unittest.TestCase):
+    """Guidance text when only new-generation conversation stores exist."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.gem_base = os.path.join(self.tmpdir, "antigravity")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _patch_env(self, gem_base: str | None, db_path: str | None):
+        from unittest import mock
+        from src.core.environment import EnvironmentResolver
+        patches = []
+        if db_path is not None:
+            patches.append(mock.patch.object(
+                EnvironmentResolver, "get_antigravity_db_paths",
+                staticmethod(lambda: [db_path])))
+        if gem_base is not None:
+            patches.append(mock.patch.object(
+                EnvironmentResolver, "get_gemini_base_paths",
+                staticmethod(lambda: [gem_base])))
+        return patches
+
+    def test_notice_for_new_generation(self):
+        """With conversation DBs but no state.vscdb, a guidance text is returned."""
+        from unittest import mock
+        from src.core.conversation_store import legacy_missing_notice
+        convs_dir = os.path.join(self.gem_base, "conversations")
+        os.makedirs(convs_dir, exist_ok=True)
+        _create_conversation_db(os.path.join(convs_dir, "conv-1.db"))
+        for patch in self._patch_env(self.gem_base, os.path.join(self.tmpdir, "none.vscdb")):
+            patch.start()
+        try:
+            notice = legacy_missing_notice()
+        finally:
+            mock.patch.stopall()
+        self.assertIn("inspect", notice or "")
+        self.assertIn("conversations", notice or "")
+
+    def test_notice_none_for_legacy(self):
+        """An existing state.vscdb means the legacy model applies (None)."""
+        from unittest import mock
+        from src.core.conversation_store import legacy_missing_notice
+        legacy_db = os.path.join(self.tmpdir, "state.vscdb")
+        with open(legacy_db, "wb") as fh:
+            fh.write(b"")
+        for patch in self._patch_env(None, legacy_db):
+            patch.start()
+        try:
+            self.assertIsNone(legacy_missing_notice())
+        finally:
+            mock.patch.stopall()
+
+    def test_notice_none_without_any_store(self):
+        """No databases at all yields no notice (clean-install case)."""
+        from unittest import mock
+        from src.core.conversation_store import legacy_missing_notice
+        for patch in self._patch_env(self.gem_base, os.path.join(self.tmpdir, "none.vscdb")):
+            patch.start()
+        try:
+            self.assertIsNone(legacy_missing_notice())
+        finally:
+            mock.patch.stopall()
+
+
+class TestSummariesRepair(unittest.TestCase):
+    """Rebuild of the new-generation Hub summaries cache via the language server RPC."""
+
+    def setUp(self):
+        from src.core.models import ConversationRecord
+        self.tmpdir = tempfile.mkdtemp()
+        self.gem_base = os.path.join(self.tmpdir, "antigravity")
+        convs = os.path.join(self.gem_base, "conversations")
+        os.makedirs(convs)
+        _create_conversation_db(
+            os.path.join(convs, "11df4615-0000-0000-0000-000000000001.db"),
+            trajectory_id="traj-a", cascade_id="11df4615-0000-0000-0000-000000000001",
+            blob=_build_metadata_blob(cascade_id="11df4615-0000-0000-0000-000000000001"),
+            n_steps=5,
+        )
+        self.record = ConversationRecord(
+            path=os.path.join(convs, "11df4615-0000-0000-0000-000000000001.db"),
+            trajectory_id="traj-a",
+            cascade_id="11df4615-0000-0000-0000-000000000001",
+            step_count=5,
+            workspace_uris=("file:///c:/PROJECTS/purr_tower",),
+            timestamp_seconds=1788184858,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_find_language_server_parses_main_log(self):
+        """Port and CSRF token are extracted from the newest spawn lines."""
+        from src.core import summaries_repair as sr
+        log = os.path.join(self.tmpdir, "main.log")
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write("[a] Spawning: language_server.exe --csrf_token old-token\n"
+                     "[a] Local: https://127.0.0.1:11111/\n"
+                     "[b] Spawning: language_server.exe --csrf_token 00000000-1111-2222-3333-444444444444 x\n"
+                     "[b] Local: https://127.0.0.1:52570/\n")
+        self.assertEqual(sr.find_language_server(log_path=log), (52570, "00000000-1111-2222-3333-444444444444"))
+
+    def test_find_language_server_missing_log(self):
+        """A missing log file yields None instead of raising."""
+        from src.core import summaries_repair as sr
+        self.assertIsNone(sr.find_language_server(
+            log_path=os.path.join(self.tmpdir, "nope.log")))
+
+    def test_build_summary_payload_fields(self):
+        """The RPC payload carries all fields the server persisted in the live repair."""
+        from src.core import summaries_repair as sr
+        payload = sr.build_summary_payload(self.record)
+        self.assertEqual(payload["cascadeId"], self.record.cascade_id)
+        summary = payload["summary"]
+        self.assertEqual(summary["stepCount"], "5")
+        self.assertEqual(summary["trajectoryId"], "traj-a")
+        self.assertEqual(summary["status"], "IDLE")
+        self.assertIn("purr_tower", summary["summary"])
+        self.assertRegex(summary["lastModifiedTime"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertRegex(summary["createdTime"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_write_summary_sends_csrf_header(self):
+        """The HTTP request carries the connect header, port and JSON body."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        captured = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(req, context=None, timeout=None):
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            captured["body"] = json.loads(req.data.decode())
+            return FakeResponse()
+
+        with mock.patch.object(sr.urllib.request, "urlopen", fake_urlopen):
+            ok, err = sr.write_summary(52570, "tok-1", {"cascadeId": "c1", "summary": {}})
+        self.assertTrue(ok, err)
+        self.assertEqual(captured["url"], "https://127.0.0.1:52570/exa.language_server_pb.LanguageServerService/JetboxWriteSummary")
+        header_names = {k.lower(): v for k, v in captured["headers"].items()}
+        self.assertEqual(header_names.get("x-codeium-csrf-token"), "tok-1")
+        self.assertEqual(captured["body"]["cascadeId"], "c1")
+
+    def test_repair_new_generation_requires_running_server(self):
+        """Without a running language server, repair fails with clear guidance."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        with mock.patch.object(sr, "find_language_server", lambda **kw: None):
+            result = sr.repair_new_generation(self.gem_base)
+        self.assertFalse(result.success)
+        self.assertIn("language server", (result.error or "").lower())
+
+    def test_repair_new_generation_writes_all_records(self):
+        """Every live conversation DB is written once via the RPC."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        written = []
+
+        def fake_write(port, token, payload):
+            written.append(payload["cascadeId"])
+            return True, ""
+
+        with mock.patch.object(sr, "find_language_server", lambda **kw: (52570, "tok")), \
+             mock.patch.object(sr, "write_summary", fake_write):
+            result = sr.repair_new_generation(self.gem_base)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.conversations_found, 1)
+        self.assertEqual(result.summaries_written, 1)
+        self.assertEqual(written, [self.record.cascade_id])
 
 
 if __name__ == "__main__":
