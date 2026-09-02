@@ -7,7 +7,7 @@ Each screen implements:
   - `view(cols, rows)`: returns rendered frame lines
 """
 from __future__ import annotations
-import os, time
+import os, textwrap, time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -24,6 +24,7 @@ from ..core.models import (
     MergeResult, RecoveryResult, WorkspaceDiagnostic, StorageEntry,
 )
 from ..core import db_operations as ops
+from ..core.conversation_store import legacy_missing_notice
 from ..core.db_scanner import scan_all, list_conversations, health_check, analyze_workspaces
 from ..core.environment import EnvironmentResolver
 from ..core import storage_manager as sm
@@ -112,6 +113,7 @@ class HomeModel:
     status_msg: str = ""
     status_time: float = 0.0
     status_severity: str = "info"
+    generation_notice: str = ""
 
 
 class HomeView:
@@ -135,6 +137,10 @@ class HomeView:
         self._refresh()
 
     def _refresh(self) -> None:
+        self.m.generation_notice = legacy_missing_notice() or ""
+        if self.m.generation_notice:
+            self.m.snapshots = []
+            return
         self.m.snapshots = scan_all(self.db_path)
         if self.m.snapshots:
             self.m.reports[self.m.snapshots[0].path] = health_check(self.m.snapshots[0])
@@ -296,8 +302,13 @@ class HomeView:
         main_h = rows - 4
 
         if not self.m.snapshots:
-            # Empty state with guidance
-            left = [STYLES.muted.apply(pad("  No databases found.", int(cols * 0.55)))]
+            if self.m.generation_notice:
+                wrapped = textwrap.wrap(self.m.generation_notice,
+                                        width=max(20, int(cols * 0.55) - 4)) or [""]
+                left = [STYLES.muted.apply(pad("  " + line, int(cols * 0.55)))
+                        for line in wrapped]
+            else:
+                left = [STYLES.muted.apply(pad("  No databases found.", int(cols * 0.55)))]
             right: list[str] = []
         else:
             left = self._render_db_table(int(cols * 0.55), main_h)
