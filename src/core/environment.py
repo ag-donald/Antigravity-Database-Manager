@@ -23,10 +23,15 @@ class EnvironmentResolver:
         if sys.platform.startswith("win"):
             appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
             candidates.append(os.path.join(appdata, "Antigravity IDE", "User", "globalStorage", "state.vscdb"))
+            candidates.append(os.path.join(appdata, "Antigravity", "User", "globalStorage", "state.vscdb"))
             candidates.append(os.path.join(appdata, "antigravity", "User", "globalStorage", "state.vscdb"))
         elif sys.platform.startswith("darwin"):
             candidates.append(os.path.join(
                 home, "Library", "Application Support", "Antigravity IDE",
+                "User", "globalStorage", "state.vscdb",
+            ))
+            candidates.append(os.path.join(
+                home, "Library", "Application Support", "Antigravity",
                 "User", "globalStorage", "state.vscdb",
             ))
             candidates.append(os.path.join(
@@ -48,16 +53,21 @@ class EnvironmentResolver:
         return paths[0]
 
     @staticmethod
+    def get_gemini_base_paths() -> list[str]:
+        """Returns all gemini base candidates, preferring the modern layout."""
+        home = os.path.expanduser("~")
+        return [
+            os.path.join(home, ".gemini", "antigravity-ide"),
+            os.path.join(home, ".gemini", "antigravity"),
+        ]
+
+    @staticmethod
     def get_gemini_base_path() -> str:
         """Returns the path to ~/.gemini/antigravity/ or ~/.gemini/antigravity-ide/."""
-        home = os.path.expanduser("~")
-        ide_path = os.path.join(home, ".gemini", "antigravity-ide")
-
-        # Newer IDE versions store data under 'antigravity-ide'; fall back to
-        # the legacy 'antigravity' folder for older installations.
-        if os.path.isdir(ide_path):
-            return ide_path
-        return os.path.join(home, ".gemini", "antigravity")
+        for base in EnvironmentResolver.get_gemini_base_paths():
+            if os.path.isdir(base):
+                return base
+        return EnvironmentResolver.get_gemini_base_paths()[-1]
 
     @staticmethod
     def is_antigravity_running() -> bool:
@@ -66,7 +76,7 @@ class EnvironmentResolver:
             if sys.platform.startswith("win"):
                 res = subprocess.run(
                     ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe", "/NH"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, errors="replace", timeout=10,
                 )
                 return "Antigravity.exe" in res.stdout
             else:
@@ -77,7 +87,7 @@ class EnvironmentResolver:
                 # a false positive on this tool's own command line.
                 res = subprocess.run(
                     ["ps", "-eo", "pid=,args="],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, errors="replace", timeout=10,
                 )
                 own_pid = str(os.getpid())
                 self_markers = ("antigravity_database_manager", "fix_workspace_uri",
