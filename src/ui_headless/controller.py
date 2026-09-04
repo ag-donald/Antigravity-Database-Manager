@@ -12,6 +12,7 @@ import os
 from ..core.environment import EnvironmentResolver
 from ..core.lifecycle import ApplicationContext
 from ..core import db_operations as ops
+from ..core.conversation_store import legacy_missing_notice
 from ..core.db_scanner import (
     scan_all, format_snapshot_table, list_conversations, health_check,
     analyze_workspaces, summarize_workspace_health, db_install_label,
@@ -124,6 +125,11 @@ def run_interactive(ctx: ApplicationContext) -> int:
 def _menu_scan(ctx: ApplicationContext) -> None:
     """Display the scan/compare table."""
     Logger.header("Database Scanner")
+    notice = legacy_missing_notice()
+    if notice:
+        Logger.warn(notice)
+        _pause()
+        return
     snapshots = scan_all(ctx.db_path)
     for line in format_snapshot_table(snapshots):
         print(line)

@@ -88,6 +88,8 @@ def create_backup(db_path: str, reason: str = "manual") -> str:
         OSError: If the copy fails.
     """
     backup_path = f"{db_path}.{BACKUP_PREFIX}_{int(time.time())}_{reason}"
+    if not os.path.isfile(db_path):
+        raise FileNotFoundError(f"Database not found: {db_path}")
     shutil.copy2(db_path, backup_path)
     return backup_path
 
@@ -365,6 +367,13 @@ def run_recovery_pipeline(
     def _progress(phase: str, msg: str) -> None:
         if on_progress:
             on_progress(phase, msg)
+
+    if not os.path.isfile(db_path):
+        return RecoveryResult(
+            success=False,
+            error=f"Database not found: {db_path} — start the IDE once to create it, "
+                  f"or pass --db-path to select a database explicitly.",
+        )
 
     # Phase 2: Discovery
     _progress("discovery", "Listing conversation files...")
