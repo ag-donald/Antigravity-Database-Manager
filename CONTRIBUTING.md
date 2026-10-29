@@ -68,6 +68,8 @@ src/
 │   ├── artifacts.py
 │   ├── db_scanner.py
 │   ├── db_operations.py
+│   ├── conversation_store.py     ← New-generation conversation DB reader (read-only)
+│   ├── summaries_repair.py       ← Hub summaries cache rebuild via language server RPC
 │   ├── diagnostic.py
 │   ├── storage_manager.py
 │   ├── uri_fix.py
@@ -86,7 +88,7 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (91 tests)
+├── test_core.py                  ← Core logic tests (119 tests)
 └── test_tui.py                   ← TUI framework tests (50 tests)
 ```
 
