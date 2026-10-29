@@ -11,37 +11,65 @@ import os
 import subprocess
 import sys
 
+from .constants import DB_FILENAME
+
+
+# Electron profile folder names, in preference order. "Antigravity" is the
+# Antigravity 2.0 standalone app's profile; "antigravity" is the original
+# (deprecated) IDE's. They are the same folder on case-insensitive
+# filesystems (Windows, default macOS), which _dedupe() collapses.
+_PROFILE_NAMES = ("Antigravity IDE", "Antigravity", "antigravity")
+
+# Windows image names: the VS Code-based IDE and the standalone app
+# (Antigravity 2.0, also the original IDE's name).
+_WINDOWS_IMAGES = ("antigravity ide.exe", "antigravity.exe")
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _dedupe(paths: list[str]) -> list[str]:
+    """Drops paths that name the same location as an earlier one, by
+    normalized spelling or, for existing paths, by file identity."""
+    kept: list[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        key = os.path.normcase(p)
+        if key in seen:
+            continue
+        if os.path.exists(p) and any(_same_file(p, k) for k in kept if os.path.exists(k)):
+            continue
+        seen.add(key)
+        kept.append(p)
+    return kept
+
 
 class EnvironmentResolver:
     """Cross-platform path resolution for all Antigravity IDE data stores."""
 
     @staticmethod
+    def get_profile_dirs() -> list[str]:
+        """Returns the OS-specific Electron profile directories (deduplicated)."""
+        home = os.path.expanduser("~")
+        if sys.platform.startswith("win"):
+            base = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        elif sys.platform.startswith("darwin"):
+            base = os.path.join(home, "Library", "Application Support")
+        else:  # Linux / BSD / WSL
+            base = os.path.join(home, ".config")
+        return _dedupe([os.path.join(base, name) for name in _PROFILE_NAMES])
+
+    @staticmethod
     def get_antigravity_db_paths() -> list[str]:
         """Returns the list of OS-specific candidate paths to the IDE's state.vscdb."""
-        home = os.path.expanduser("~")
-        candidates = []
-        if sys.platform.startswith("win"):
-            appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
-            candidates.append(os.path.join(appdata, "Antigravity IDE", "User", "globalStorage", "state.vscdb"))
-            candidates.append(os.path.join(appdata, "Antigravity", "User", "globalStorage", "state.vscdb"))
-            candidates.append(os.path.join(appdata, "antigravity", "User", "globalStorage", "state.vscdb"))
-        elif sys.platform.startswith("darwin"):
-            candidates.append(os.path.join(
-                home, "Library", "Application Support", "Antigravity IDE",
-                "User", "globalStorage", "state.vscdb",
-            ))
-            candidates.append(os.path.join(
-                home, "Library", "Application Support", "Antigravity",
-                "User", "globalStorage", "state.vscdb",
-            ))
-            candidates.append(os.path.join(
-                home, "Library", "Application Support", "antigravity",
-                "User", "globalStorage", "state.vscdb",
-            ))
-        else:  # Linux / BSD / WSL
-            candidates.append(os.path.join(home, ".config", "Antigravity IDE", "User", "globalStorage", "state.vscdb"))
-            candidates.append(os.path.join(home, ".config", "Antigravity", "User", "globalStorage", "state.vscdb"))
-        return candidates
+        return _dedupe([
+            os.path.join(d, "User", "globalStorage", DB_FILENAME)
+            for d in EnvironmentResolver.get_profile_dirs()
+        ])
 
     @staticmethod
     def get_antigravity_db_path() -> str:
@@ -71,14 +99,18 @@ class EnvironmentResolver:
 
     @staticmethod
     def is_antigravity_running() -> bool:
-        """Best-effort detection of whether the Antigravity IDE process is active."""
+        """Best-effort detection of whether an Antigravity IDE or app process is active."""
         try:
             if sys.platform.startswith("win"):
                 res = subprocess.run(
-                    ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe", "/NH"],
+                    ["tasklist", "/FO", "CSV", "/NH"],
                     capture_output=True, text=True, errors="replace", timeout=10,
                 )
-                return "Antigravity.exe" in res.stdout
+                for line in res.stdout.splitlines():
+                    image = line.split('","', 1)[0].strip().strip('"').lower()
+                    if image in _WINDOWS_IMAGES:
+                        return True
+                return False
             else:
                 # `ps` is used instead of `pgrep -f` because pgrep's flags for
                 # full-commandline listing differ between procps (Linux) and

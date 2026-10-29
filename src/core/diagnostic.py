@@ -14,6 +14,7 @@ from typing import Optional
 
 from .constants import PB_KEY
 from .protobuf import ProtobufEncoder
+from .db_scanner import sqlite_uri
 
 
 # ==============================================================================
@@ -214,16 +215,21 @@ def diagnose_database(db_path: str) -> DiagnosticReport:
     """
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(sqlite_uri(db_path), uri=True, timeout=5)
         cur = conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()
 
-        if not row or not row[0]:
+        if not row:
             return DiagnosticReport(
                 db_path=db_path, total_entries=0, corrupt_entries=0,
                 warning_entries=0, clean_entries=0,
                 error="No trajectorySummaries key found in database",
+            )
+        if not row[0]:  # Index present but empty: nothing to diagnose
+            return DiagnosticReport(
+                db_path=db_path, total_entries=0, corrupt_entries=0,
+                warning_entries=0, clean_entries=0,
             )
 
         decoded = base64.b64decode(row[0])

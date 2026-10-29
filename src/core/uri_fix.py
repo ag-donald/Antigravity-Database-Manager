@@ -289,6 +289,7 @@ def normalize_database(db_path: str, dry_run: bool = False) -> UriNormalizeResul
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()
         if not row or not row[0]:
+            conn.close()
             return UriNormalizeResult(success=False, db_path=db_path,
                                       error="No trajectorySummaries index found in this database.")
         raw = base64.b64decode(row[0])

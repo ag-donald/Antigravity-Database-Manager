@@ -8,19 +8,97 @@ All notable changes to this project are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version numbers adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Release dates use ISO 8601 (`YYYY-MM-DD`). File paths are relative to the repository root.
 
-## [8.9.0] - 2026-09-02
+## [8.9.0] - 2026-10-29
 
 ### Added
-- **`inspect` command — new-generation conversation store** — The newest IDE builds no longer create a central `state.vscdb`: each conversation is a self-contained SQLite database under `~/.gemini/antigravity[-ide]/conversations/<uuid>.db` whose `trajectory_metadata_blob` row carries the workspace, git, timestamp, cascade and project metadata the old index held, and IDE-made copies live in a `conversations_backup/` directory. `inspect` detects the installed data generation (legacy / new / none), lists every conversation DB across all gemini bases (backup copies flagged) with cascade id, step count, workspace URI and git branch, and flags conversations without a cascade id — the new generation's invisible-history signal. Fully read-only (`mode=ro` with an `immutable=1` fallback for backup copies whose WAL sidecars would need recovery); `--json` supported. Adds `src/core/conversation_store.py`, the `ConversationRecord` model, and `get_gemini_base_paths()` (`src/core/conversation_store.py`, `src/core/models.py`, `src/core/environment.py`, `src/ui_headless/cli_parser.py`).
-- **`repair` — Hub summaries cache rebuild for the new generation (Bug #13)** — The new IDE generation lists sidebar conversations from the Hub summaries cache (`agyhub_summaries_proto.pb`); a crash can zero that file (observed: 675 NUL bytes after an unclean shutdown) and the server never rebuilds it — its directory watcher only refreshes entries that already exist, so intact conversation databases become invisible ("no conversations yet"). `repair` now detects this generation and rebuilds every missing summary entry by calling the running language server's `JetboxWriteSummary` RPC (port and CSRF token are parsed from the IDE's `logs/main.log`; connect-JSON with the `x-codeium-csrf-token` header). The server persists the entries itself and pushes them to the open IDE live; conversation databases are never modified. Reverse-engineered against language server 2.11.0 (`src/core/summaries_repair.py`, `src/ui_headless/cli_parser.py`).
-- **Tests** — 25 new cases: metadata-blob wire-format parsing (workspace/git/timestamp/cascade/project fields, garbage and missing-table tolerance), sidecar skipping, backup flagging and deterministic ordering, read-only guarantees (no journal/WAL left behind), generation detection, CLI grammar including `--json` placement, new-generation guidance notices, main.log endpoint parsing, RPC payload/header construction, and the summaries repair pipeline (`tests/test_core.py`).
+- **Three-generation support** — The tool now recognises three data generations:
+  - G1: the original Antigravity, `.pb` conversations and `state.vscdb`.
+  - G2: Antigravity IDE (VS Code-based), `.pb`/`.db` conversations and `state.vscdb`.
+  - G3: Antigravity 2.0 and newer builds. There is no `state.vscdb`; each conversation is a self-contained `<uuid>.db` under `~/.gemini/antigravity[-ide]/conversations/`, IDE-made copies live in `conversations_backup/`, and the sidebar is fed by `agyhub_summaries_proto.pb`.
+
+  G2 and G3 can be installed side by side, and G3 shares its `Antigravity` profile folder with G1 on case-insensitive filesystems. `detect_generation()` reports `legacy`, `new`, `mixed` or `none`; the summaries cache is the marker that tells a G3 store apart from G2's `.db` conversations. New read-only reader `src/core/conversation_store.py`, contributed by Elvis33LE in PR #10: it reverse-engineers the `trajectory_metadata_blob` wire format (workspace, git, timestamps, cascade id and project id), opens live databases strictly with `mode=ro` (never modifying them; SQLite may leave empty `-wal`/`-shm` sidecars after reading a WAL-mode file), and uses an `immutable=1` fallback only for backup copies (`src/core/conversation_store.py`, `src/core/models.py`, `src/core/environment.py`).
+- **`inspect` command** (PR #10) — Lists every conversation database across all gemini bases, with cascade id, step count, workspace URI and git branch; backup copies are flagged. It also reports each summaries cache: not found, zeroed (Bug #13), all conversations listed, N missing, or format not recognised. Exits non-zero only when no Antigravity data exists. `--json` is supported (`src/ui_headless/cli_parser.py`).
+- **`repair --summaries` — Hub summaries cache rebuild (Bug #13)** (PR #10, hardened in review) — A crash can zero `agyhub_summaries_proto.pb` (675 NUL bytes observed), and the language server never rebuilds it, so intact conversations vanish from the sidebar.
+  - **What it does:** `repair --summaries` rebuilds **only the conversations missing from the cache**, through the running language server's `JetboxWriteSummary` RPC on `127.0.0.1`, so the server persists the entries and the sidebar updates live.
+  - **Safety:**
+    - the cache file is backed up first;
+    - existing summaries are never replaced unless `--all` is given;
+    - a non-empty cache with no recognisable conversation id is never overwritten without `--all`;
+    - only stores that have the summaries cache are repaired, so the VS Code-based IDE's `.db` conversations are never sent anywhere;
+    - conversation files that cannot be read are reported;
+    - synthetic titles skip the bare `file:///` placeholder and decode folder names, and millisecond or out-of-range timestamps fall back safely;
+    - `--dry-run` previews the plan offline;
+    - the run stops at the first connection failure;
+    - conversation databases are never modified.
+  - **Finding the server:** the endpoint is taken from the newest language-server spawn in Antigravity 2.0's `logs/main.log` or `logs/<session>/main.log` (plus `~/Library/Logs/Antigravity/` on macOS). The port is paired with the last `--csrf_token`. The "Antigravity IDE" profile's logs are never used, so its own language server never receives these writes. Verified on Windows; macOS and Linux use the standard Electron log locations.
+  - **When it runs:** `repair` switches to it automatically when no `state.vscdb` exists. `--summaries` reaches it on mixed installs.
+
+  Reverse-engineered against language server 2.11.0 (`src/core/summaries_repair.py`, `src/ui_headless/cli_parser.py`).
+- **`repair --dry-run`** — On G1/G2 databases, reports how many entries would be repaired without writing anything.
+- **G2 recovery reads conversation `.db` metadata** — During `recover`, a `.db` conversation with no workspace binding left in `state.vscdb` takes it from its own metadata blob when that folder exists, before brain-artifact inference and the dominant-workspace fallback. Idea from the felimz fork, reimplemented on the structured reader (`src/core/db_operations.py`).
+- **Tests** — 77 new cases, 218 in total:
+  - wire-format parsing;
+  - the missing-only, `--all`, dry-run, zeroed-cache, unknown-format and unreachable-server repair paths;
+  - endpoint pairing and session-folder discovery;
+  - candidate deduplication;
+  - Windows process names;
+  - mixed and `--db-path`-aware generation detection;
+  - JSON validity;
+  - every audit fix below;
+  - TUI view robustness (`tests/test_core.py`, `tests/test_tui.py`).
 
 ### Fixed
-- **Phantom "Antigravity IDE … File not found" row on new-generation installs** — With no `state.vscdb` anywhere, the TUI home screen, `scan`, `health`, and the headless scanner menu fabricated a dead database row from the nonexistent default path. All surfaces now detect the new generation and show guidance (conversations location, entry count, `inspect` hint) instead; `scan`/`health` exit non-zero and `--json` emits `{"generation": "new", "note": …}` (`src/ui_tui/views.py`, `src/ui_headless/cli_parser.py`, `src/ui_headless/controller.py`).
-- **`UnicodeDecodeError` traceback on Windows startup** — `is_antigravity_running()` ran `tasklist` with locale decoding (cp1252 on German Windows) while `tasklist` emits OEM-codepage bytes (`ü` = 0x81, undefined in cp1252), killing the subprocess reader thread with a `UnicodeDecodeError` traceback before every run; both platform probes now pass `errors="replace"` (`src/core/environment.py`).
-- **Cryptic `[WinError 3]` when no database exists** — With no `state.vscdb` candidate on disk, `recover` ran its Discovery and Build phases against a nonexistent path and died with `Backup failed: [WinError 3] Das System kann den angegebenen Pfad nicht finden`. The pipeline now fails fast with `Database not found: <path>` (including guidance to start the IDE once or pass `--db-path`), and `create_backup()` raises a clear `FileNotFoundError` for every caller (recover, repair, merge, menus) (`src/core/db_operations.py`).
-- **`%APPDATA%\Antigravity` profile candidate** — Newer IDE builds name their Electron profile folder `Antigravity` (no ` IDE` suffix); added as a third Windows and macOS `state.vscdb` candidate (`src/core/environment.py`).
-- **`--json` after the subcommand was rejected** — Every documented form like `recover --json`, `health --json`, or `conversations list --json` exited with `error: unrecognized arguments: --json`; only `--json <command>` parsed. All subparsers now share the flag through a parent parser, so both positions work (`src/ui_headless/cli_parser.py`).
+- **Duplicate databases on Windows/macOS** — The `Antigravity` profile candidate is the same folder as `antigravity` on case-insensitive filesystems, so it was listed twice: a bogus "Multiple Databases Detected" prompt, duplicate switch-menu rows, and doubled `scan` rows and backups on macOS. Candidates are now derived from one deduplicated profile list (spelling, then file identity) (`src/core/environment.py`).
+- **`--db-path` ignored by the new-generation guidance** — `scan`, `health`, `recover`, the TUI home screen and the headless menus refused to run whenever G3 data existed, even with a valid `--db-path`. The guidance now appears only when the active database is missing (`src/core/conversation_store.py`, `src/ui_headless/`, `src/ui_tui/views.py`).
+- **Running-IDE detection missed Antigravity IDE on Windows** — Only `Antigravity.exe` was checked. `Antigravity IDE.exe` is now detected too, from one CSV `tasklist` listing. Finding from the felimz fork (`src/core/environment.py`).
+- **Crash on console encodings** — Status glyphs (✓ ⚠ ✗) raised `UnicodeEncodeError` on legacy Windows consoles. Output streams now use `errors="replace"`; the idea comes from the felimz fork (`src/core/lifecycle.py`).
+- **`UnicodeDecodeError` traceback on Windows startup** (PR #10) — Process listings are decoded with `errors="replace"` (`src/core/environment.py`).
+- **Cryptic `[WinError 3]` when no database exists** (PR #10) — `recover` stops early with `Database not found: <path>`, and `create_backup()` raises a clear `FileNotFoundError` (`src/core/db_operations.py`).
+- **`--json` after the subcommand was rejected** (PR #10) — Both positions now parse. In addition:
+  - `diagnose --json` no longer prints a header before the JSON document, and reports errors as JSON;
+  - `repair --json` is honoured on G1/G2;
+  - `fix-uris` no longer advertises a `--json` it never produced (`src/ui_headless/cli_parser.py`).
+- **Phantom "Antigravity IDE — File not found" row on G3 installs** (PR #10) — Guidance replaces it. `recover` on G3 now points to `inspect` / `repair --summaries` instead of telling users to create a `state.vscdb` (`src/ui_tui/views.py`, `src/ui_headless/`).
+- **Headless "Switch Active Database" crashed with a custom path** — It called an undefined `norm()`, raising `NameError`. Quoted, pasted paths now work (`src/ui_headless/controller.py`).
+- **TUI crashes and false success reports:**
+  - backup, reset and restore errors are shown instead of crashing the TUI or printing a bare "Error";
+  - conversation rename/delete report the operation's error instead of always saying "Renamed"/"Deleted";
+  - storage edit/delete failures are reported (`src/ui_tui/views.py`).
+- **TUI navigation:**
+  - `↓`/`PgDn` on an empty list no longer produces index −1;
+  - the browser and storage views keep the selection visible at any terminal height (the clamp was hardcoded to 20 rows);
+  - the merge diff table now scrolls with its cursor (`src/ui_tui/views.py`).
+- **POSIX workspace URIs had four slashes** — `build_workspace_dict("/home/u/p")` produced `file:////home/u/p`, which affected `workspace migrate` and `repair` on macOS/Linux. Windows output is unchanged (`src/core/db_operations.py`).
+- **POSIX brain-artifact workspace inference never matched** — The leading `/` was dropped, so real `file:///abs/path` URIs produced relative paths. Percent-encoding is now fully decoded too. Candidates keep three components below the root on every OS, so a home folder (`/home/u`, `/Users/u`) can never win, and paths inside `~/.gemini/` are ignored (`src/core/artifacts.py`).
+- **Recovery misread step-blob paths as workspace bindings** — Any `file:///` string inside a top-level field (for example a tool-call path in Field 12) suppressed workspace assignment. Only the structured Fields 9.1/17.7 count now, and the unused loose `extract_workspace_hint` was removed (`src/core/db_operations.py`, `src/core/db_scanner.py`, `src/core/protobuf.py`).
+- **Read-only SQLite URIs broke on special characters** — Paths containing `?`, `#`, `%` or spaces are percent-encoded via `sqlite_uri()`, at every read-only call site (`src/core/db_scanner.py`, `src/core/db_operations.py`, `src/core/diagnostic.py`, `src/core/conversation_store.py`).
+- **Created-after-modified timestamps** — POSIX `st_ctime` (inode change time) was used as the creation time. Birth time is used where the OS records one, and creation time never exceeds modification time (`src/core/db_operations.py`, `src/core/summaries_repair.py`).
+- **Torn final index entries** — A truncated last entry in `trajectorySummaries` is now skipped instead of being parsed from a short slice (`src/core/db_scanner.py`).
+- **`storage patch` / `storage delete` problems:**
+  - `"NaN"`/`"Infinity"` were stored as floats, producing invalid JSON in `storage.json`;
+  - patching under a non-object parent silently did nothing;
+  - deleting a missing key reported success.
+
+  All three now behave correctly, including numeric overflows such as `1e999`, which are kept as strings (`src/core/storage_manager.py`).
+- **`storage backup/patch/delete` traceback** when the IDE profile directory is missing (`src/ui_headless/cli_parser.py`).
+- **`scan` table misalignment** — Long labels and errors are truncated to the column width (`src/core/db_scanner.py`).
+- **TUI `R` on new-generation installs** — It now explains that recovery does not apply, instead of opening the legacy wizard (`src/ui_tui/views.py`).
+- **Windows UNC workspaces** — `\\server\share\p` keeps the server as the URI authority (`file://server/share/p`) (`src/core/db_operations.py`).
+- **`diagnose` / `repair` on an empty index** — An existing but empty `trajectorySummaries` key is reported as healthy with 0 entries instead of "key not found" (`src/core/diagnostic.py`).
+- **Leaked SQLite connection** — `fix-uris --db` closed its connection on every path except "no index found" (`src/core/uri_fix.py`).
+
+### Changed
+- **TUI "Reset Database (Empty)" → "Reset Conversation Indices"** — The old action reported success without changing anything. The new `reset_conversation_index()` backs up the database, then clears only the `trajectorySummaries` and `ChatSessionStore.index` keys; all other IDE state is kept (`src/core/db_operations.py`, `src/ui_tui/views.py`).
+- **`create_empty_db` uses VS Code's exact storage schema** — `ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)` with `user_version = 1` (`src/core/db_operations.py`).
+- **Docs** — Added a three-generation compatibility table, the Bug #13 catalog entry and report, `repair` flags, and Reset semantics, and updated test counts. The safety statements now state the single localhost-only connection used by `repair --summaries` (`README.md`, `SECURITY.md`, `BUGS_RESEARCH.md`, `CONTRIBUTING.md`, `BUGREPORT_Google_Antigravity_SummariesCache_Bug13.md`).
+
+### Fork audit
+All 12 public forks were compared with this repository. Two carry unique work:
+- **felimz `feature/workspace-resolution-repair`** (Antigravity 2.0 URI scripts, a prune CLI, workspace heuristics). Its process-name and console-encoding findings and its `.db`-metadata workspace idea were adopted, as noted above. The rest was not adopted, because:
+  - automatic forced pruning deletes conversations without a backup;
+  - its workspace matching is tied to one user's folders;
+  - its protobuf rewriters write files the language server owns and roll back to stale backups.
+- **SawLay043's Go rewrite** contained no new format knowledge. Comparing it against this codebase exposed the POSIX URI, step-blob, SQLite-URI, timestamp and storage bugs fixed above.
 
 ## [8.8.0] - 2026-08-19
 

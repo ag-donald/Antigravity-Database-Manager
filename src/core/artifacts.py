@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import urllib.parse
 
 
 class ArtifactParser:
@@ -39,12 +40,20 @@ class ArtifactParser:
                     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read(16384)
                     for match in path_pattern.finditer(content):
-                        raw = match.group(1)
-                        raw = raw.replace("%3A", ":").replace("%3a", ":")
-                        raw = raw.replace("%20", " ")
-                        parts = raw.replace("\\", "/").split("/")
+                        raw = urllib.parse.unquote(match.group(1))
+                        if not is_windows:
+                            # The capture starts after "file:///", which
+                            # swallows the POSIX root: restore it.
+                            raw = "/" + raw.lstrip("/")
+                        raw = raw.replace("\\", "/")
+                        if "/.gemini/" in raw:
+                            continue  # Antigravity's own data, never a workspace
+                        parts = raw.split("/")
 
-                        depth_start = 4 if is_windows else 3
+                        # Shallowest candidate keeps three components below the
+                        # root ("c:/Users/u/proj", "/home/u/proj"), so a home
+                        # folder can never win as the most common prefix.
+                        depth_start = 4
                         for d in range(depth_start, len(parts)):
                             ws = "/".join(parts[:d])
                             path_counts[ws] = path_counts.get(ws, 0) + 1

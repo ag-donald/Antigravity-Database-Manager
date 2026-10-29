@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  antigravity_database_manager.py storage inspect\n"
             "  antigravity_database_manager.py fix-uris --dry-run\n"
             "  antigravity_database_manager.py inspect\n"
+            "  antigravity_database_manager.py repair --summaries --dry-run\n"
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"{APP_NAME} v{VERSION}")
@@ -104,11 +105,18 @@ def build_parser() -> argparse.ArgumentParser:
     rep_parser = subparsers.add_parser("repair", parents=[shared_flags],
                                        help="Autonomously repair detected corruptions")
     rep_parser.add_argument("--target", default="", help="Path to external database (default: current)")
+    rep_parser.add_argument("--summaries", action="store_true",
+                            help="Rebuild missing sidebar entries of the new-generation summaries "
+                                 "cache (Antigravity 2.0; no state.vscdb) via the running language server")
+    rep_parser.add_argument("--all", dest="rewrite_all", action="store_true",
+                            help="With --summaries: rewrite every summary, replacing existing titles "
+                                 "(implies --summaries)")
+    rep_parser.add_argument("--dry-run", action="store_true",
+                            help="Report what would be repaired without writing anything")
 
     # --- fix-uris (Bug #12) ---
     fix_parser = subparsers.add_parser(
         "fix-uris",
-        parents=[shared_flags],
         help='Fix the Windows "Select where to open the conversation" dialog (Bug #12)',
         description=(
             "Patches the IDE's workbench bundle so workspace-URI comparisons "
@@ -239,7 +247,7 @@ def execute(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 # ==============================================================================
 
 def _cmd_scan(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    notice = legacy_missing_notice()
+    notice = legacy_missing_notice(ctx.db_path)
     if notice:
         if getattr(args, "json", False):
             print(json.dumps({"generation": "new", "note": notice}, indent=2))
@@ -263,6 +271,13 @@ def _cmd_scan(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 def _cmd_recover(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     use_json = getattr(args, "json", False)
+    notice = legacy_missing_notice(ctx.db_path)
+    if notice:
+        if use_json:
+            print(json.dumps({"success": False, "generation": "new", "error": notice}, indent=2))
+        else:
+            Logger.warn(notice)
+        return 1
     if not use_json:
         Logger.banner()
     result = ops.run_recovery_pipeline(
@@ -347,7 +362,7 @@ def _cmd_create(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_health(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-    notice = legacy_missing_notice()
+    notice = legacy_missing_notice(ctx.db_path)
     if notice:
         if getattr(args, "json", False):
             print(json.dumps({"generation": "new", "note": notice}, indent=2))
@@ -486,6 +501,9 @@ def _cmd_workspace(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 def _cmd_storage(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     action = getattr(args, "storage_action", None)
     storage_dir = os.path.dirname(ctx.db_path)
+    if action in ("backup", "patch", "delete") and not os.path.isdir(storage_dir):
+        Logger.error(f"IDE profile directory not found: {storage_dir}")
+        return 1
 
     if action == "inspect":
         data = sm.read_storage(storage_dir)
@@ -536,22 +554,35 @@ def _cmd_storage(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 def _cmd_inspect(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     from ..core import conversation_store as store
+    from ..core.summaries_repair import summaries_cache_status
 
-    generation = store.detect_generation()
+    generation = store.detect_generation(ctx.db_path)
     per_base: dict[str, list] = {}
+    caches = {}
     for base in EnvironmentResolver.get_gemini_base_paths():
         records = store.collect_conversations(base)
         if records:
             per_base[base] = records
+            caches[base] = summaries_cache_status(
+                base, [r.cascade_id for r in records if not r.is_backup])
+    exit_code = 1 if generation == "none" else 0
 
     if getattr(args, "json", False):
         print(json.dumps({
             "generation": generation,
-            "state_vscdb_found": generation == "legacy",
+            "state_vscdb_found": generation in ("legacy", "mixed"),
             "bases": [{
                 "path": base,
                 "live": [r.path for r in records if not r.is_backup],
                 "backups": [r.path for r in records if r.is_backup],
+                "summaries_cache": {
+                    "path": caches[base].path,
+                    "exists": caches[base].exists,
+                    "size_bytes": caches[base].size_bytes,
+                    "zeroed": caches[base].zeroed,
+                    "present_count": len(caches[base].present),
+                    "missing": list(caches[base].missing),
+                },
                 "conversations": [{
                     "path": r.path, "trajectory_id": r.trajectory_id,
                     "cascade_id": r.cascade_id, "step_count": r.step_count,
@@ -564,20 +595,26 @@ def _cmd_inspect(args: argparse.Namespace, ctx: ApplicationContext) -> int:
                 } for r in records],
             } for base, records in per_base.items()],
         }, indent=2))
-        return 0 if per_base else 1
+        return exit_code
 
     Logger.header("Conversation Store Inspector")
     if generation == "legacy":
         Logger.info("Generation: legacy — central state.vscdb index found; "
                     "the recovery pipeline applies to this installation.")
+    elif generation == "mixed":
+        Logger.info("Generation: mixed — a state.vscdb index and a new-generation "
+                    "conversation store both exist (e.g. Antigravity IDE alongside "
+                    "Antigravity 2.0, or a leftover state.vscdb).")
+        Logger.info("Legacy commands act on state.vscdb; use 'repair --summaries' "
+                    "for the new-generation store.")
     elif generation == "new":
         Logger.info("Generation: new — no state.vscdb; each conversation is a "
                     "self-contained database and carries its own metadata.")
-        Logger.info("The legacy recovery pipeline is not applicable; this view "
-                    "is the source of truth for conversation health.")
+        Logger.info("The legacy recovery pipeline is not applicable; use "
+                    "'repair --summaries' if conversations are missing from the sidebar.")
     else:
         Logger.error("No Antigravity data stores found on this machine.")
-        return 1
+        return exit_code
 
     all_records = [r for records in per_base.values() for r in records]
     for base, records in per_base.items():
@@ -593,28 +630,47 @@ def _cmd_inspect(args: argparse.Namespace, ctx: ApplicationContext) -> int:
             print(f"  {cascade}  steps={rec.step_count}  {ws}{git}{tag}")
             if rec.error:
                 print(f"    ⚠ {rec.error}")
+        cache = caches[base]
+        listed = len(cache.present) + len(cache.missing)
+        if not cache.exists:
+            Logger.info("Summaries cache: not found")
+        elif cache.zeroed:
+            Logger.warn(f"Summaries cache: ZEROED ({cache.size_bytes} bytes) — the sidebar "
+                        "shows no conversations; run 'repair --summaries' (Bug #13)")
+        elif cache.format_unknown:
+            Logger.warn("Summaries cache: format not recognised — no conversation id "
+                        "found in it")
+        elif cache.missing:
+            Logger.warn(f"Summaries cache: {len(cache.present)}/{listed} conversations "
+                        f"listed; {len(cache.missing)} missing — run 'repair --summaries'")
+        else:
+            Logger.success(f"Summaries cache: all {listed} conversations listed")
 
     missing = [r for r in all_records if not r.cascade_id and not r.error]
     if missing:
         Logger.warn(f"{len(missing)} conversation(s) without a cascade id — "
-                    "the IDE cannot list them.")
+                    "these cannot be rebuilt by 'repair --summaries'.")
     else:
         Logger.success("All readable conversations have a cascade id.")
-    return 0
+    return exit_code
 
 
 def _cmd_diagnose(args: argparse.Namespace, ctx: ApplicationContext) -> int:
-
+    use_json = getattr(args, "json", False)
     target = getattr(args, "target", "") or ctx.db_path
-    Logger.header("Database Corruption Diagnostic")
-    Logger.info(f"Target: {target}")
+    if not use_json:
+        Logger.header("Database Corruption Diagnostic")
+        Logger.info(f"Target: {target}")
 
     report = diagnose_database(target)
     if report.error:
-        Logger.error(f"Scan failed: {report.error}")
+        if use_json:
+            print(json.dumps({"db_path": target, "error": report.error}, indent=2))
+        else:
+            Logger.error(f"Scan failed: {report.error}")
         return 1
 
-    if getattr(args, "json", False):
+    if use_json:
         data = {
             "db_path": report.db_path,
             "total_entries": report.total_entries,
@@ -650,17 +706,59 @@ def _cmd_diagnose(args: argparse.Namespace, ctx: ApplicationContext) -> int:
 
 
 def _cmd_repair(args: argparse.Namespace, ctx: ApplicationContext) -> int:
+    from ..core import conversation_store as store
 
-    target = getattr(args, "target", "") or ctx.db_path
-    if not getattr(args, "target", "") and not os.path.isfile(target):
-        from ..core import conversation_store as store
-        if store.detect_generation() == "new":
-            return _cmd_repair_summaries(args, ctx)
+    use_json = getattr(args, "json", False)
+    explicit_target = getattr(args, "target", "")
+    if getattr(args, "summaries", False) or getattr(args, "rewrite_all", False):
+        if explicit_target:
+            msg = ("--summaries/--all repair the new-generation summaries cache "
+                   "and cannot be combined with --target.")
+            if use_json:
+                print(json.dumps({"success": False, "error": msg}, indent=2))
+            else:
+                Logger.error(msg)
+            return 1
+        return _cmd_repair_summaries(args, ctx)
 
-    Logger.header("Autonomous Database Repair")
-    Logger.info(f"Target: {target}")
+    target = explicit_target or ctx.db_path
+    if not explicit_target and not os.path.isfile(target) \
+            and store.detect_generation(ctx.db_path) == "new":
+        return _cmd_repair_summaries(args, ctx)
+
+    if not use_json:
+        Logger.header("Autonomous Database Repair")
+        Logger.info(f"Target: {target}")
+
+    if getattr(args, "dry_run", False):
+        report = diagnose_database(target)
+        pending = report.corrupt_entries + report.warning_entries
+        if use_json:
+            print(json.dumps({"success": not report.error, "dry_run": True,
+                              "entries_scanned": report.total_entries,
+                              "entries_to_repair": pending,
+                              "error": report.error or ""}, indent=2))
+        elif report.error:
+            Logger.error(f"Scan failed: {report.error}")
+        else:
+            Logger.info(f"Dry run — would repair {pending} of {report.total_entries} entries "
+                        "(nothing written).")
+        return 1 if report.error else 0
 
     result = ops.repair_database(target)
+    if use_json:
+        print(json.dumps({
+            "success": result.success,
+            "entries_scanned": result.entries_scanned,
+            "entries_repaired": result.entries_repaired,
+            "entries_preserved": result.entries_preserved,
+            "ghost_bytes_stripped": result.ghost_bytes_stripped,
+            "double_wraps_fixed": result.double_wraps_fixed,
+            "uuid_mismatches_fixed": result.uuid_mismatches_fixed,
+            "backup_path": result.backup_path or "",
+            "error": result.error or "",
+        }, indent=2))
+        return 0 if result.success else 1
     if result.success:
         Logger.success("Repair complete.")
         Logger.info(f"Entries scanned:    {result.entries_scanned}")
@@ -686,35 +784,63 @@ def _cmd_repair_summaries(args: argparse.Namespace, ctx: ApplicationContext) -> 
     from ..core import summaries_repair as sr
 
     use_json = getattr(args, "json", False)
+    rewrite_all = getattr(args, "rewrite_all", False)
+    dry_run = getattr(args, "dry_run", False)
     if not use_json:
         Logger.header("Summaries Cache Repair (New Generation)")
-        Logger.info("No state.vscdb — rebuilding the Hub summaries cache from "
-                    "the self-contained conversation databases.")
-        Logger.info("Requires a running IDE; conversation databases are never modified.")
+        Logger.info("Rebuilding sidebar entries of the Hub summaries cache from the "
+                    "self-contained conversation databases.")
+        if rewrite_all:
+            Logger.warn("--all: every summary is rewritten, replacing existing titles.")
+        if dry_run:
+            Logger.info("Dry run — nothing will be written.")
+        else:
+            Logger.info("Requires a running Antigravity; conversation databases are never modified.")
 
     result = sr.repair_new_generation(
+        rewrite_all=rewrite_all, dry_run=dry_run,
         on_progress=None if use_json else
         lambda phase, msg: Logger.info(f"[{phase}] {msg}"))
 
     if use_json:
         print(json.dumps({
             "success": result.success,
+            "dry_run": result.dry_run,
             "conversations_found": result.conversations_found,
+            "already_present": result.already_present,
+            "to_write": result.to_write,
             "summaries_written": result.summaries_written,
+            "planned": list(result.planned),
+            "backup_paths": list(result.backup_paths),
+            "unreadable": list(result.unreadable),
             "language_server_url": result.language_server_url,
             "errors": list(result.errors),
             "error": result.error or "",
         }, indent=2))
         return 0 if result.success else 1
 
-    if result.success:
-        Logger.success(f"Rebuilt {result.summaries_written} of "
-                       f"{result.conversations_found} conversation summary/summaries "
-                       f"via {result.language_server_url}.")
-        Logger.info("The sidebar updates live; no IDE restart required.")
+    for path in result.unreadable:
+        Logger.warn(f"Could not read (skipped): {path}")
+    if not result.success:
+        Logger.error(f"Summaries repair failed: {result.error}")
+        return 1
+    if result.dry_run:
+        Logger.success(f"Would rebuild {result.to_write} of {result.conversations_found} "
+                       f"summaries ({result.already_present} already present).")
+        for cid in result.planned:
+            print(f"  + {cid}")
         return 0
-    Logger.error(f"Summaries repair failed: {result.error}")
-    return 1
+    if not result.to_write:
+        Logger.success(f"All {result.conversations_found} conversation summaries are "
+                       "present in the cache — nothing to repair.")
+        return 0
+    Logger.success(f"Rebuilt {result.summaries_written} of {result.to_write} missing "
+                   f"summaries via {result.language_server_url} "
+                   f"({result.already_present} already present).")
+    for path in result.backup_paths:
+        Logger.info(f"Cache backup: {path}")
+    Logger.info("The sidebar updates live; no restart required.")
+    return 0
 
 
 def _cmd_fix_uris(args: argparse.Namespace, ctx: ApplicationContext) -> int:

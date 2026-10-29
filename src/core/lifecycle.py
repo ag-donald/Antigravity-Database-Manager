@@ -50,6 +50,7 @@ class ApplicationContext:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> "ApplicationContext":
+        self._harden_console_streams()
         self._register_signals()
         self._register_atexit()
         return self
@@ -58,6 +59,19 @@ class ApplicationContext:
                  exc_tb: object) -> bool:
         self._teardown()
         return False  # Do not suppress exceptions
+
+    @staticmethod
+    def _harden_console_streams() -> None:
+        """Never crash on output the console encoding cannot represent
+        (e.g. status glyphs on a cp1252 Windows console)."""
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is None:
+                continue
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
 
     # ------------------------------------------------------------------
     # Preflight Checks

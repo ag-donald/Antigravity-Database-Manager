@@ -87,13 +87,17 @@ because the runtime resolution of the (missing) summary entries produces empty p
 
 ---
 
-## Community Workaround (`repair`)
+## Community Workaround (`repair --summaries`)
 
 The community tool **Antigravity Database Manager** (unofficial) rebuilds missing summaries by
 calling the running language server's `JetboxWriteSummary` RPC (endpoint and CSRF token parsed
 from `logs/main.log`), so the server itself persists and pushes the repaired entries to the open
 IDE. This restored the affected conversation live during this investigation.
-See `src/core/summaries_repair.py` in https://github.com/ag-donald/Antigravity-Database-Manager/pull/10.
+
+`inspect` reports whether the cache is zeroed or missing entries. `repair --summaries` (automatic
+when no `state.vscdb` exists) backs up the cache first and writes only the conversations that are
+absent from it; existing summaries are replaced only with `--all`, and `--dry-run` previews the plan.
+See `src/core/summaries_repair.py` in https://github.com/ag-donald/Antigravity-Database-Manager.
 
 ---
 

@@ -51,6 +51,9 @@ def run_interactive(ctx: ApplicationContext) -> int:
     warnings = ctx.perform_preflight_checks()
     for w in warnings:
         Logger.warn(w)
+    notice = legacy_missing_notice(ctx.db_path)
+    if notice:
+        Logger.warn(notice)
 
     if ctx.ide_running:
         try:
@@ -125,10 +128,7 @@ def run_interactive(ctx: ApplicationContext) -> int:
 def _menu_scan(ctx: ApplicationContext) -> None:
     """Display the scan/compare table."""
     Logger.header("Database Scanner")
-    notice = legacy_missing_notice()
-    if notice:
-        Logger.warn(notice)
-        _pause()
+    if _show_generation_notice(ctx):
         return
     snapshots = scan_all(ctx.db_path)
     for line in format_snapshot_table(snapshots):
@@ -201,6 +201,8 @@ def _menu_restore(ctx: ApplicationContext) -> None:
 def _menu_recover(ctx: ApplicationContext) -> None:
     """Run the full recovery pipeline with progress output."""
     Logger.header("Full Recovery Pipeline")
+    if _show_generation_notice(ctx):
+        return
 
     if not os.path.isdir(ctx.convs_dir):
         Logger.error(f"Conversations directory not found: {ctx.convs_dir}")
@@ -400,6 +402,8 @@ def _menu_browse(ctx: ApplicationContext) -> None:
 def _menu_health(ctx: ApplicationContext) -> None:
     """Display database health check."""
     Logger.header("Health Check")
+    if _show_generation_notice(ctx):
+        return
     snapshots = scan_all(ctx.db_path)
     if not snapshots:
         Logger.error("No database found.")
@@ -530,7 +534,7 @@ def _menu_switch_db(ctx: ApplicationContext) -> None:
         except ValueError:
             pass
 
-        custom_path = norm(ans)
+        custom_path = normalize_path(ans.strip('"').strip("'"))
         if os.path.isfile(custom_path):
             ctx.db_path = custom_path
             warnings = ctx.perform_preflight_checks()
@@ -542,6 +546,17 @@ def _menu_switch_db(ctx: ApplicationContext) -> None:
     except (KeyboardInterrupt, EOFError):
         pass
     _pause()
+
+
+def _show_generation_notice(ctx: ApplicationContext) -> bool:
+    """Shows the new-generation guidance (and pauses) when no state.vscdb
+    applies; returns True when the caller should stop."""
+    notice = legacy_missing_notice(ctx.db_path)
+    if not notice:
+        return False
+    Logger.warn(notice)
+    _pause()
+    return True
 
 
 def _pause() -> None:

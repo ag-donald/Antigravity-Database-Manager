@@ -218,9 +218,27 @@ On Windows, conversations always show the "Select where to open the conversation
 
 ---
 
+## Bug #13 — Zeroed Hub Summaries Cache (New Generation, "No conversations yet")
+
+On the newest generation (Antigravity 2.0 and builds without a `state.vscdb`), the Agent Manager sidebar shows "No conversations yet" for every project after a crash, although every conversation database is intact.
+
+| Detail | Description |
+|--------|-------------|
+| **Trigger** | Unclean shutdown (crash, power loss, force-kill) while the language server persists its summaries cache |
+| **Symptoms** | Sidebar empty for every project, indefinitely. The `<uuid>.db` files under `~/.gemini/antigravity[-ide]/conversations/` still hold all steps and metadata. |
+| **Root Cause** | The sidebar lists conversations from `~/.gemini/antigravity[-ide]/agyhub_summaries_proto.pb`, which is written non-atomically; a crash can leave it as pure NUL bytes (675 observed). The server's watcher only refreshes entries that already exist ("Conversation %s has no summary in cache, skipping summary update"), so the cache is never rebuilt from the intact databases. Same non-atomic-flush class as Bug #2. Observed on language server 2.11.0. |
+| **Our Fix** | `inspect` reports the cache state (missing, zeroed, or N conversations unlisted). `repair --summaries` (automatic when no `state.vscdb` exists) backs up the cache, then rebuilds **only the missing entries** (of stores that have the cache file; the VS Code-based IDE's `.db` conversations are never sent) through the running language server's `JetboxWriteSummary` RPC, so the server persists them and the sidebar updates live. Existing summaries are never replaced unless `--all` is passed; `--dry-run` previews; conversation databases are never modified. |
+| **Note** | Requires Antigravity to be running (the endpoint and CSRF token are read from its local `logs/main.log`). Rebuilt entries carry a synthetic title (`<folder> conversation (N steps)`) because the original summary text was lost with the cache. |
+
+| Community Reports | Author | Source |
+|-------------------|--------|--------|
+| [Zeroed Hub summaries cache hides all conversations after a crash](BUGREPORT_Google_Antigravity_SummariesCache_Bug13.md) | Elvis33LE | Community report (this repository) |
+
+---
+
 ## Technical Root Cause
 
-Eleven of the 12 bugs stem from the same fundamental architectural flaw: the IDE's failure to atomically manage its three internal state stores (Bug #12 is the exception — a frontend encoding-comparison defect rather than an atomicity failure):
+Eleven of the first 12 bugs stem from the same fundamental architectural flaw: the IDE's failure to atomically manage its three internal state stores (Bug #12 is the exception — a frontend encoding-comparison defect rather than an atomicity failure). Bug #13 is the same non-atomic-write failure in the newest generation's single summaries cache:
 
 1. **`chat.ChatSessionStore.index`** (JSON) — Gets reset to `{"version":1,"entries":{}}` on failure
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — Loses UUID-to-conversation mappings

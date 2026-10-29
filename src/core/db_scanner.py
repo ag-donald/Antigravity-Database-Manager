@@ -16,6 +16,7 @@ import re
 import sqlite3
 import time
 import urllib.parse
+from pathlib import Path
 
 from .constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, DB_FILENAME, PLACEHOLDER_TITLE_PREFIX
 from .environment import EnvironmentResolver
@@ -48,6 +49,8 @@ def extract_existing_metadata(decoded: bytes) -> tuple[dict[str, str], dict[str,
             break
 
         length, pos = ProtobufEncoder.decode_varint(decoded, pos)
+        if pos + length > len(decoded):
+            break  # Torn final entry: never parse a truncated slice
         outer_entry = decoded[pos:pos + length]
         pos += length
 
@@ -145,16 +148,36 @@ def file_uri_to_path(uri: str) -> str:
     return "/" + decoded     # POSIX absolute path
 
 
-def extract_workspace_uri(raw_inner: bytes) -> str:
+def sqlite_uri(path: str, query: str = "mode=ro") -> str:
+    """
+    Builds a SQLite ``file:`` URI for ``path`` with the given query string.
+    The path is percent-encoded, so names containing ``?``, ``#``, ``%`` or
+    spaces open correctly; UNC paths (which SQLite URIs cannot express)
+    fall back to the plain ``file:<path>`` form.
+    """
+    try:
+        uri = Path(os.path.abspath(path)).as_uri()
+    except ValueError:
+        uri = ""
+    if not uri.startswith("file:///"):
+        uri = f"file:{path}"
+    return f"{uri}?{query}"
+
+
+def extract_workspace_uri(raw_inner: bytes, allow_fallback: bool = True) -> str:
     """Safely extracts a file:/// workspace URI from a raw Protobuf inner blob.
     It parses the true Field 17 -> Field 7 hierarchical structure to avoid
     false positives from AI messages containing 'file:///' references.
+
+    With ``allow_fallback=False`` only those structured fields count; the
+    last-``file:///``-substring fallback (which can match tool-call paths
+    inside step blobs) is skipped.
     """
     if b"file:///" not in raw_inner:
         return ""
+    latest_uri = ""
     try:
         pos = 0
-        latest_uri = ""
         while pos < len(raw_inner):
             tag, pos = ProtobufEncoder.decode_varint(raw_inner, pos)
             field_num = tag >> 3
@@ -187,11 +210,13 @@ def extract_workspace_uri(raw_inner: bytes) -> str:
                             break
             else:
                 pos = ProtobufEncoder.skip_protobuf_field(raw_inner, pos, wire_type)
-        if latest_uri:
-            return canonicalize_drive_uri(latest_uri)
     except Exception:
         pass
-    
+    if latest_uri:
+        return canonicalize_drive_uri(latest_uri)
+    if not allow_fallback:
+        return ""
+
     # Fallback to absolute last file:/// substring if it completely fails to decode
     try:
         start = raw_inner.rfind(b"file:///")
@@ -253,7 +278,7 @@ def scan_database(db_path: str, label: str, is_current: bool = False) -> Databas
 
     conn = None
     try:
-        db_uri = f"file:{db_path}?mode=ro"
+        db_uri = sqlite_uri(db_path)
         conn = sqlite3.connect(db_uri, uri=True, timeout=5)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -341,7 +366,7 @@ def list_conversations(db_path: str) -> list[ConversationEntry]:
 
     conn = None
     try:
-        db_uri = f"file:{db_path}?mode=ro"
+        db_uri = sqlite_uri(db_path)
         conn = sqlite3.connect(db_uri, uri=True, timeout=5)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -513,14 +538,14 @@ def format_snapshot_table(snapshots: list[DatabaseSnapshot]) -> list[str]:
     lines.append("  |  #  | Label                | Size     | Convs | Titled |  WS  | JSON Index |")
     lines.append("  +-----+----------------------+----------+-------+--------+------+------------+")
 
+    def fit(text: str, width: int) -> str:
+        return text if len(text) <= width else text[:width - 3] + "..."
+
     for idx, snap in enumerate(snapshots):
-        if snap.is_current:
-            lbl = f"* {snap.label}"
-        else:
-            lbl = snap.label
+        lbl = fit(f"* {snap.label}" if snap.is_current else snap.label, 20)
 
         if snap.error:
-            lines.append(f"  | {idx:^3} | {lbl:<20} | {format_size(snap.size_bytes):>8} | {snap.error:<42} |")
+            lines.append(f"  | {idx:^3} | {lbl:<20} | {format_size(snap.size_bytes):>8} | {fit(snap.error, 42):<42} |")
         else:
             lines.append(f"  | {idx:^3} | {lbl:<20} | {format_size(snap.size_bytes):>8} | {snap.conversation_count:>5} | {snap.titled_count:>6} | {snap.workspace_count:>4} | {snap.json_entry_count:>10} |")
 

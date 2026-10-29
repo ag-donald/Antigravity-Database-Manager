@@ -176,11 +176,35 @@ class RepairResult:
 
 
 @dataclass(frozen=True)
+class SummariesCacheStatus:
+    """State of a new-generation summaries cache relative to the conversation
+    DBs next to it. A conversation counts as present when its cascade id
+    (an ASCII UUID string) occurs in the cache bytes."""
+    path: str
+    exists: bool = False
+    size_bytes: int = 0
+    zeroed: bool = False
+    present: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+
+    @property
+    def format_unknown(self) -> bool:
+        """Non-empty cache in which no conversation id could be located."""
+        return self.exists and not self.zeroed and bool(self.missing) and not self.present
+
+
+@dataclass(frozen=True)
 class SummariesRepairResult:
     """Result of rebuilding the new-generation Hub summaries cache."""
     success: bool
     conversations_found: int = 0
     summaries_written: int = 0
+    already_present: int = 0
+    to_write: int = 0
+    planned: tuple[str, ...] = ()
+    backup_paths: tuple[str, ...] = ()
+    dry_run: bool = False
+    unreadable: tuple[str, ...] = ()
     language_server_url: str = ""
     errors: tuple[str, ...] = ()
     error: Optional[str] = None
