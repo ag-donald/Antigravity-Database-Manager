@@ -34,10 +34,14 @@ from .constants import PB_KEY, JSON_KEY, BACKUP_PREFIX, PLACEHOLDER_TITLE_PREFIX
 from .models import (
     MergeDiff, MergeResult, OpResult, RestoreResult, RecoveryResult, RepairResult,
 )
-from .db_scanner import extract_existing_metadata, file_uri_to_path, list_conversations
+from .db_scanner import (
+    extract_existing_metadata, extract_workspace_uri, file_uri_to_path,
+    list_conversations, sqlite_uri,
+)
 from .diagnostic import diagnose_database, GHOST_BYTES, DOUBLE_WRAP, UUID_MISMATCH
 from .protobuf import ProtobufEncoder
 from .artifacts import ArtifactParser
+from .conversation_store import read_conversation_db
 
 
 # ==============================================================================
@@ -55,9 +59,11 @@ def build_workspace_dict(path: str) -> dict[str, str]:
     
     folder_name = os.path.basename(path_normalized) or "RecoveredProject"
 
-    uri_path_encoded = urllib.parse.quote(path_normalized, safe="/")
-    uri_encoded = f"file:///{uri_path_encoded}"
-    uri_plain = f"file:///{path_normalized}"
+    # POSIX paths already start with "/": strip it so the URI keeps exactly
+    # three slashes (file:///home/u/p, never file:////home/u/p).
+    uri_path = path_normalized.lstrip("/")
+    uri_encoded = f"file:///{urllib.parse.quote(uri_path, safe='/')}"
+    uri_plain = f"file:///{uri_path}"
 
     return {
         "uri_encoded": uri_encoded,
@@ -71,6 +77,22 @@ def build_workspace_dict(path: str) -> dict[str, str]:
 def placeholder_title(cid: str, prefix: str = PLACEHOLDER_TITLE_PREFIX) -> str:
     """Fallback display title for a conversation with no stored title."""
     return f"{prefix} {cid[:8]}"
+
+
+def file_times(path: str) -> tuple[int, int]:
+    """
+    Returns ``(created, modified)`` epoch seconds for a file. Creation time
+    is the birth time where the OS records one (macOS, BSD, Windows); POSIX
+    ``st_ctime`` is the inode-change time, not creation, so the
+    modification time stands in there. Created never exceeds modified.
+    """
+    st = os.stat(path)
+    modified = int(st.st_mtime)
+    birth = getattr(st, "st_birthtime", None)
+    if birth is None and sys.platform.startswith("win"):
+        birth = st.st_ctime
+    created = int(birth) if birth else modified
+    return min(created, modified), modified
 
 
 # ==============================================================================
@@ -126,7 +148,36 @@ def create_empty_db(target_path: str) -> OpResult:
     try:
         conn = sqlite3.connect(target_path)
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+        # Exactly VS Code's storage schema (src/vs/base/parts/storage/node/storage.ts).
+        cur.execute("CREATE TABLE IF NOT EXISTS ItemTable "
+                    "(key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+        cur.execute("PRAGMA user_version = 1")
+        conn.commit()
+        return OpResult(success=True)
+    except Exception as exc:
+        return OpResult(success=False, error=str(exc))
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def reset_conversation_index(db_path: str) -> OpResult:
+    """
+    Clears the two conversation indices (``trajectorySummaries`` and
+    ``ChatSessionStore.index``) after a backup; every other IDE setting in
+    the database is kept. The IDE starts with an empty history afterwards,
+    and ``recover`` can rebuild it from the conversation files.
+    """
+    if not os.path.isfile(db_path):
+        return OpResult(success=False, error=f"Database file not found: {db_path}")
+    conn = None
+    try:
+        create_backup(db_path, reason="before_index_reset")
+        conn = sqlite3.connect(db_path, timeout=10)
+        conn.execute("DELETE FROM ItemTable WHERE key IN (?, ?)", (PB_KEY, JSON_KEY))
         conn.commit()
         return OpResult(success=True)
     except Exception as exc:
@@ -199,7 +250,7 @@ def execute_merge(source_path: str, target_path: str,
     tgt_conn = None
     try:
         # 2. Read source PB + JSON (read-only connection)
-        src_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True, timeout=5)
+        src_conn = sqlite3.connect(sqlite_uri(source_path), uri=True, timeout=5)
         src_cur = src_conn.cursor()
 
         src_cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
@@ -336,6 +387,28 @@ def resolve_title(cid: str, existing_titles: dict[str, str],
 # FULL RECOVERY PIPELINE (Phases 1-6)
 # ==============================================================================
 
+def _has_workspace(inner: Optional[bytes]) -> bool:
+    """True when an inner blob binds a workspace in its structured Fields
+    9.1/17.7 (``file:///`` strings inside step blobs do not count)."""
+    return bool(inner and extract_workspace_uri(inner, allow_fallback=False))
+
+
+def _workspace_from_conversation_db(convs_dir: str, cid: str) -> str | None:
+    """Workspace folder recorded in a self-describing ``<cid>.db``
+    conversation file, if it exists on disk (read-only, never raises)."""
+    path = os.path.join(convs_dir, f"{cid}.db")
+    if not os.path.isfile(path):
+        return None
+    rec = read_conversation_db(path)
+    for uri in (*rec.workspace_uris, rec.workspace_uri_encoded):
+        # Bare "file:///" is a placeholder (simple chats), not the root folder.
+        if uri.startswith("file:///") and uri.rstrip("/") != "file:":
+            candidate = file_uri_to_path(uri)
+            if os.path.isdir(candidate):
+                return candidate
+    return None
+
+
 def _safe_rollback(backup_path: str, target_path: str) -> None:
     """
     Last-resort rollback: copies the pre-recovery backup back over the DB.
@@ -424,13 +497,15 @@ def run_recovery_pipeline(
             except Exception:
                 pass
 
-    # Auto-assign workspaces from surviving Protobuf hints and local metadata
+    # Auto-assign workspaces from surviving Protobuf hints and local metadata:
+    # the conversation DB's own record first, then brain-artifact inference.
     for cid in all_pbs:
         if cid not in ws_assignments:
-            inner = existing_inner_blobs.get(cid)
-            if inner and ProtobufEncoder.extract_workspace_hint(inner):
+            if _has_workspace(existing_inner_blobs.get(cid)):
                 continue  # Already has workspace in PB blob
-            inferred = ArtifactParser.infer_workspace_from_brain(cid, brain_dir)
+            inferred = _workspace_from_conversation_db(convs_dir, cid)
+            if not inferred:
+                inferred = ArtifactParser.infer_workspace_from_brain(cid, brain_dir)
             if inferred and os.path.isdir(inferred):
                 ws_assignments[cid] = build_workspace_dict(inferred)
 
@@ -442,8 +517,7 @@ def run_recovery_pipeline(
             dominant_dict = next(v for v in ws_assignments.values() if v["uri_plain"] == dominant_uri)
             for cid in all_pbs:
                 if cid not in ws_assignments:
-                    inner = existing_inner_blobs.get(cid)
-                    if not (inner and ProtobufEncoder.extract_workspace_hint(inner)):
+                    if not _has_workspace(existing_inner_blobs.get(cid)):
                         ws_assignments[cid] = dominant_dict
 
     # Resolve titles and build entries
@@ -453,7 +527,7 @@ def run_recovery_pipeline(
     for cid in all_pbs:
         title, source = resolve_title(cid, existing_titles, convs_dir)
         inner_data = existing_inner_blobs.get(cid)
-        has_ws = bool(inner_data and ProtobufEncoder.extract_workspace_hint(inner_data))
+        has_ws = _has_workspace(inner_data)
         resolved.append((cid, title, source, inner_data, has_ws))
 
     # Phase 4: Backup — ALWAYS before any writes
@@ -492,8 +566,7 @@ def run_recovery_pipeline(
                 src_path = os.path.join(convs_dir, f"{cid}.db")
 
             if os.path.exists(src_path):
-                pb_mtime = int(os.path.getmtime(src_path))
-                pb_ctime = int(os.path.getctime(src_path))
+                pb_ctime, pb_mtime = file_times(src_path)
             else:
                 pb_mtime = int(time.time())
                 pb_ctime = int(time.time())
@@ -593,7 +666,7 @@ def get_conversation_payload(db_path: str, target_uuid: str) -> str:
         return "Database file not found."
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(sqlite_uri(db_path), uri=True, timeout=5)
         cur = conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (JSON_KEY,))
         row = cur.fetchone()
@@ -807,7 +880,7 @@ def repair_database(db_path: str) -> RepairResult:
 
     read_conn = None
     try:
-        read_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        read_conn = sqlite3.connect(sqlite_uri(db_path), uri=True, timeout=5)
         cur = read_conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()

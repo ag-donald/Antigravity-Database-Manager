@@ -14,6 +14,7 @@ from typing import Optional
 
 from .constants import PB_KEY
 from .protobuf import ProtobufEncoder
+from .db_scanner import sqlite_uri
 
 
 # ==============================================================================
@@ -214,7 +215,7 @@ def diagnose_database(db_path: str) -> DiagnosticReport:
     """
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(sqlite_uri(db_path), uri=True, timeout=5)
         cur = conn.cursor()
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()

@@ -21,7 +21,7 @@ from .components import (
 from ..core.constants import VERSION, APP_NAME
 from ..core.models import (
     DatabaseSnapshot, MergeDiff, ConversationEntry, HealthReport,
-    MergeResult, RecoveryResult, WorkspaceDiagnostic, StorageEntry,
+    MergeResult, OpResult, RecoveryResult, WorkspaceDiagnostic, StorageEntry,
 )
 from ..core import db_operations as ops
 from ..core.conversation_store import legacy_missing_notice
@@ -137,7 +137,7 @@ class HomeView:
         self._refresh()
 
     def _refresh(self) -> None:
-        self.m.generation_notice = legacy_missing_notice() or ""
+        self.m.generation_notice = legacy_missing_notice(self.db_path) or ""
         if self.m.generation_notice:
             self.m.snapshots = []
             return
@@ -150,7 +150,7 @@ class HomeView:
             return [
                 "Browse Conversations", "Run Full Recovery", "Create Backup",
                 "Merge From Another DB", "Workspace Diagnostics",
-                "Manage Storage", "Reset Database (Empty)"
+                "Manage Storage", "Reset Conversation Indices"
             ]
         elif os.path.basename(snap.path) == "state.vscdb":
             return [
@@ -167,6 +167,14 @@ class HomeView:
         self.m.status_msg = msg
         self.m.status_time = time.time()
         self.m.status_severity = severity
+
+    def _backup(self, path: str) -> None:
+        try:
+            ops.create_backup(path, reason="manual")
+            self.set_status(f"{Icons.CHECK} Backup created")
+        except OSError as exc:
+            self.set_status(f"{Icons.CROSS} Backup failed: {exc}", "error")
+        self._refresh()
 
     def update(self, key: KeyEvent) -> Optional[str]:
         # Auto-dismiss status after 5 seconds
@@ -193,16 +201,14 @@ class HomeView:
                 elif choice == "Run Full Recovery":
                     return "push:recover"
                 elif choice == "Create Backup":
-                    ops.create_backup(cur_snap.path, reason="manual")
-                    self.set_status(f"{Icons.CHECK} Backup created")
-                    self._refresh()
+                    self._backup(cur_snap.path)
                 elif choice == "Merge From Another DB":
                     return "push:merge"
                 elif choice == "Workspace Diagnostics":
                     return f"push:workspaces:{cur_snap.path}"
                 elif choice == "Manage Storage":
                     return "push:storage"
-                elif choice == "Reset Database (Empty)":
+                elif choice == "Reset Conversation Indices":
                     self.m.overlay = "confirm_reset"
                 elif choice == "Restore This Backup":
                     self.m.overlay = "confirm_restore"
@@ -222,7 +228,8 @@ class HomeView:
             if key.char.lower() == "y":
                 res = ops.restore_backup(cur_snap.path, self.db_path)
                 self.set_status(
-                    f"{Icons.CHECK} Restored!" if res.success else f"{Icons.CROSS} Error",
+                    f"{Icons.CHECK} Restored!" if res.success
+                    else f"{Icons.CROSS} Restore failed: {res.error}",
                     "success" if res.success else "error"
                 )
                 self.m.overlay = "none"
@@ -246,9 +253,12 @@ class HomeView:
 
         elif self.m.overlay == "confirm_reset" and cur_snap:
             if key.char.lower() == "y":
-                ops.create_backup(cur_snap.path, reason="before_empty")
-                ops.create_empty_db(cur_snap.path)
-                self.set_status(f"{Icons.CHECK} Database reset safely")
+                res = ops.reset_conversation_index(cur_snap.path)
+                self.set_status(
+                    f"{Icons.CHECK} Conversation indices cleared (backup created)" if res
+                    else f"{Icons.CROSS} Reset failed: {res.error}",
+                    "success" if res else "error"
+                )
                 self.m.overlay = "none"
                 self._refresh()
             elif key.char.lower() == "n" or key.key == Key.ESCAPE:
@@ -259,11 +269,11 @@ class HomeView:
         if key.key == Key.UP:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
-            self.m.selected = min(len(self.m.snapshots) - 1, self.m.selected + 1)
+            self.m.selected = max(0, min(len(self.m.snapshots) - 1, self.m.selected + 1))
         elif key.key == Key.PAGE_UP:
             self.m.selected = max(0, self.m.selected - 10)
         elif key.key == Key.PAGE_DOWN:
-            self.m.selected = min(len(self.m.snapshots) - 1, self.m.selected + 10)
+            self.m.selected = max(0, min(len(self.m.snapshots) - 1, self.m.selected + 10))
 
         # Lazy-load health reports for newly selected snapshots
         if self.m.snapshots:
@@ -276,9 +286,7 @@ class HomeView:
             self._refresh()
             self.set_status(f"{Icons.CHECK} Refreshed")
         elif key.char.lower() == "b" and cur_snap:
-            ops.create_backup(cur_snap.path, reason="manual")
-            self.set_status(f"{Icons.CHECK} Backup created")
-            self._refresh()
+            self._backup(cur_snap.path)
         elif key.char.lower() == "r":
             return "push:recover"
         elif key.char.lower() == "w":
@@ -332,9 +340,9 @@ class HomeView:
                 dlg = ConfirmDialog("Delete Backup", [f"Delete {cur_snap.label}?"])
                 lines = overlay_on(lines, dlg.render(cols, rows))
             elif self.m.overlay == "confirm_reset":
-                dlg = ConfirmDialog("Reset Database", [
-                    f"{Icons.WARNING} This will ERASE all data in {cur_snap.label}.",
-                    "A backup will be created first.",
+                dlg = ConfirmDialog("Reset Conversation Indices", [
+                    f"{Icons.WARNING} This clears the conversation indices of {cur_snap.label}.",
+                    "Other IDE state is kept. A backup is created first.",
                     "Are you sure?"
                 ])
                 lines = overlay_on(lines, dlg.render(cols, rows))
@@ -444,6 +452,14 @@ class ConversationBrowserView:
             self.m.filtered = list(self.m.convs)
         self.m.selected = min(self.m.selected, max(0, len(self.m.filtered) - 1))
 
+    def _set_result(self, res: OpResult, ok_msg: str, fail_msg: str) -> None:
+        if res:
+            self.m.status_msg = f"{Icons.CHECK} {ok_msg}"
+            self.m.status_severity = "success"
+        else:
+            self.m.status_msg = f"{Icons.CROSS} {fail_msg}: {res.error}"
+            self.m.status_severity = "error"
+
     def update(self, key: KeyEvent) -> Optional[str]:
         cur_conv = self.m.filtered[self.m.selected] if self.m.filtered else None
 
@@ -484,9 +500,8 @@ class ConversationBrowserView:
         if self.m.overlay == "rename_input" and cur_conv:
             if key.key == Key.ENTER:
                 if self.m.input_text.strip():
-                    ops.rename_conversation(self.target_db, cur_conv.uuid, self.m.input_text.strip())
-                    self.m.status_msg = f"{Icons.CHECK} Renamed"
-                    self.m.status_severity = "success"
+                    res = ops.rename_conversation(self.target_db, cur_conv.uuid, self.m.input_text.strip())
+                    self._set_result(res, "Renamed", "Rename failed")
                     self.on_enter()
                 self.m.overlay = "none"
             elif key.key == Key.ESCAPE:
@@ -499,9 +514,8 @@ class ConversationBrowserView:
 
         if self.m.overlay == "confirm_delete" and cur_conv:
             if key.char.lower() == "y":
-                ops.delete_conversation(self.target_db, cur_conv.uuid)
-                self.m.status_msg = f"{Icons.CHECK} Deleted"
-                self.m.status_severity = "success"
+                res = ops.delete_conversation(self.target_db, cur_conv.uuid)
+                self._set_result(res, "Deleted", "Delete failed")
                 self.m.overlay = "none"
                 self.on_enter()
             elif key.char.lower() == "n" or key.key == Key.ESCAPE:
@@ -512,11 +526,11 @@ class ConversationBrowserView:
         if key.key == Key.UP:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
-            self.m.selected = min(len(self.m.filtered) - 1, self.m.selected + 1)
+            self.m.selected = max(0, min(len(self.m.filtered) - 1, self.m.selected + 1))
         elif key.key == Key.PAGE_UP:
             self.m.selected = max(0, self.m.selected - 10)
         elif key.key == Key.PAGE_DOWN:
-            self.m.selected = min(len(self.m.filtered) - 1, self.m.selected + 10)
+            self.m.selected = max(0, min(len(self.m.filtered) - 1, self.m.selected + 10))
         elif key.char == "/":
             self.m.is_searching = True
         elif key.char.lower() == "d" and cur_conv:
@@ -536,9 +550,6 @@ class ConversationBrowserView:
             else:
                 self.m.status_msg = f"{Icons.CROSS} Copy failed"
                 self.m.status_severity = "error"
-
-        # Keep scroll in sync
-        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, visible_h=20)
 
         return None
 
@@ -583,6 +594,7 @@ class ConversationBrowserView:
         ]
         title_w = w - 8
         data_h = h - 3
+        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, max(1, data_h))
         for idx, c in enumerate(list(self.m.filtered)[self.m.scroll:self.m.scroll + data_h]):
             real_i = idx + self.m.scroll
             title = truncate(c.title, title_w)
@@ -778,6 +790,7 @@ class MergeModel:
     cursor: int = 0
     strategy: str = "additive"
     res: Optional[MergeResult] = None
+    scroll: int = 0
 
 
 class MergeWizardView:
@@ -799,6 +812,7 @@ class MergeWizardView:
         self.m.selected_uuids = set(self.m.diff.source_only)
         self.m.step = "diff_preview"
         self.m.cursor = 0
+        self.m.scroll = 0
 
     def _all_entries(self) -> list[tuple[str, str, str]]:
         if not self.m.diff:
@@ -832,7 +846,7 @@ class MergeWizardView:
             if key.key == Key.UP:
                 self.m.cursor = max(0, self.m.cursor - 1)
             elif key.key == Key.DOWN:
-                self.m.cursor = min(len(all_e) - 1, self.m.cursor + 1)
+                self.m.cursor = max(0, min(len(all_e) - 1, self.m.cursor + 1))
             elif key.char == " " and all_e:
                 uid = all_e[self.m.cursor][0]
                 if uid in self.m.selected_uuids:
@@ -932,8 +946,11 @@ class MergeWizardView:
         ]
 
         entries = self._all_entries()
+        visible = max(1, h - 3)
+        self.m.scroll = _clamp_scroll(self.m.cursor, self.m.scroll, visible)
 
-        for idx, (uid, title, kind) in enumerate(entries[:h - 3]):
+        for idx, (uid, title, kind) in enumerate(
+                entries[self.m.scroll:self.m.scroll + visible], start=self.m.scroll):
             check = STYLES.success.apply(f"[{Icons.CHECK}]") if uid in self.m.selected_uuids else STYLES.dim.apply("[ ]")
             label = truncate(title, w - 16)
             tag = STYLES.badge_new.apply(" NEW ") if kind == "new" else STYLES.badge_shared.apply(" SHR ")
@@ -971,7 +988,7 @@ class WorkspaceBrowserView:
         if key.key == Key.UP:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
-            self.m.selected = min(len(self.m.diagnostics) - 1, self.m.selected + 1)
+            self.m.selected = max(0, min(len(self.m.diagnostics) - 1, self.m.selected + 1))
         elif key.key == Key.ESCAPE:
             return "back"
         return None
@@ -1076,10 +1093,14 @@ class StorageBrowserView:
             if key.key == Key.ENTER:
                 if self.m.entries and self.m.input_text.strip():
                     entry = self.m.entries[self.m.selected]
-                    sm.patch_key(self.m.raw_data, entry.key, self.m.input_text.strip())
-                    sm.write_storage(self.storage_dir, self.m.raw_data, reason="storage_edit")
-                    self.m.status_msg = f"{Icons.CHECK} Saved"
-                    self.m.status_severity = "success"
+                    try:
+                        sm.patch_key(self.m.raw_data, entry.key, self.m.input_text.strip())
+                        sm.write_storage(self.storage_dir, self.m.raw_data, reason="storage_edit")
+                        self.m.status_msg = f"{Icons.CHECK} Saved"
+                        self.m.status_severity = "success"
+                    except (KeyError, ValueError, OSError) as exc:
+                        self.m.status_msg = f"{Icons.CROSS} Save failed: {exc}"
+                        self.m.status_severity = "error"
                     self.on_enter()
                 self.m.overlay = "none"
             elif key.key == Key.ESCAPE:
@@ -1094,10 +1115,14 @@ class StorageBrowserView:
             if key.char.lower() == "y":
                 if self.m.entries:
                     entry = self.m.entries[self.m.selected]
-                    sm.delete_key(self.m.raw_data, entry.key)
-                    sm.write_storage(self.storage_dir, self.m.raw_data, reason="storage_del")
-                    self.m.status_msg = f"{Icons.CHECK} Deleted"
-                    self.m.status_severity = "success"
+                    try:
+                        sm.delete_key(self.m.raw_data, entry.key)
+                        sm.write_storage(self.storage_dir, self.m.raw_data, reason="storage_del")
+                        self.m.status_msg = f"{Icons.CHECK} Deleted"
+                        self.m.status_severity = "success"
+                    except (KeyError, ValueError, OSError) as exc:
+                        self.m.status_msg = f"{Icons.CROSS} Delete failed: {exc}"
+                        self.m.status_severity = "error"
                     self.on_enter()
                 self.m.overlay = "none"
             elif key.char.lower() == "n" or key.key == Key.ESCAPE:
@@ -1107,11 +1132,11 @@ class StorageBrowserView:
         if key.key == Key.UP:
             self.m.selected = max(0, self.m.selected - 1)
         elif key.key == Key.DOWN:
-            self.m.selected = min(len(self.m.entries) - 1, self.m.selected + 1)
+            self.m.selected = max(0, min(len(self.m.entries) - 1, self.m.selected + 1))
         elif key.key == Key.PAGE_UP:
             self.m.selected = max(0, self.m.selected - 10)
         elif key.key == Key.PAGE_DOWN:
-            self.m.selected = min(len(self.m.entries) - 1, self.m.selected + 10)
+            self.m.selected = max(0, min(len(self.m.entries) - 1, self.m.selected + 10))
         elif key.char.lower() == "e" and self.m.entries:
             entry = self.m.entries[self.m.selected]
             self.m.overlay = "edit_value"
@@ -1120,9 +1145,6 @@ class StorageBrowserView:
             self.m.overlay = "confirm_delete"
         elif key.key == Key.ESCAPE:
             return "back"
-
-        # Keep scroll in sync
-        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, visible_h=20)
 
         return None
 
@@ -1165,6 +1187,7 @@ class StorageBrowserView:
             STYLES.table_header.apply(pad("  Key", w)),
             STYLES.dim.apply("─" * w),
         ]
+        self.m.scroll = _clamp_scroll(self.m.selected, self.m.scroll, max(1, h - 3))
         visible = list(self.m.entries)[self.m.scroll:self.m.scroll + h - 3]
         for idx, e in enumerate(visible):
             real_i = idx + self.m.scroll

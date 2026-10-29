@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import urllib.parse
 
 
 class ArtifactParser:
@@ -39,9 +40,11 @@ class ArtifactParser:
                     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read(16384)
                     for match in path_pattern.finditer(content):
-                        raw = match.group(1)
-                        raw = raw.replace("%3A", ":").replace("%3a", ":")
-                        raw = raw.replace("%20", " ")
+                        raw = urllib.parse.unquote(match.group(1))
+                        if not is_windows:
+                            # The capture starts after "file:///", which
+                            # swallows the POSIX root: restore it.
+                            raw = "/" + raw.lstrip("/")
                         parts = raw.replace("\\", "/").split("/")
 
                         depth_start = 4 if is_windows else 3

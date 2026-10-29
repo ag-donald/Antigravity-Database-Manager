@@ -379,6 +379,70 @@ class TestHeaderGradient(unittest.TestCase):
         self.assertEqual(len(lines), 3)
 
 
+# ==============================================================================
+# VIEW ROBUSTNESS TESTS
+# ==============================================================================
+
+class TestViewsRobustness(unittest.TestCase):
+    """Views must surface errors instead of crashing or reporting false success."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        from src.core.lifecycle import ApplicationContext
+        self.tmpdir = tempfile.mkdtemp()
+        self.ctx = ApplicationContext()
+        self.ctx.db_path = os.path.join(self.tmpdir, "missing", "state.vscdb")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _home(self, snapshots):
+        from unittest import mock
+        from src.ui_tui import views
+        patches = (mock.patch.object(views, "legacy_missing_notice", lambda db_path="": None),
+                   mock.patch.object(views, "scan_all", lambda path: list(snapshots)))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        view = views.HomeView(self.ctx)
+        view.on_enter()
+        return view
+
+    def test_home_backup_of_missing_db_reports_error(self):
+        """'B' on a database that does not exist shows an error, not a traceback."""
+        from src.core.models import DatabaseSnapshot
+        snap = DatabaseSnapshot(self.ctx.db_path, "Antigravity IDE", 0, 0, 0, 0, 0, 0,
+                                True, error="File not found")
+        view = self._home([snap])
+        view.update(KeyEvent(Key.CHAR, "b"))
+        self.assertEqual(view.m.status_severity, "error")
+
+    def test_home_down_on_empty_list_stays_at_zero(self):
+        """Navigation on an empty list never produces a negative index."""
+        view = self._home([])
+        view.update(KeyEvent(Key.DOWN))
+        view.update(KeyEvent(Key.PAGE_DOWN))
+        self.assertEqual(view.m.selected, 0)
+
+    def test_browser_rename_failure_is_shown(self):
+        """A failed rename reports the operation's error."""
+        from unittest import mock
+        from src.ui_tui import views
+        from src.core.models import ConversationEntry, OpResult
+        entry = ConversationEntry("uuid-1", "Old", "", True, True, False)
+        with mock.patch.object(views, "list_conversations", lambda db: [entry]), \
+             mock.patch.object(views.ops, "rename_conversation",
+                               lambda db, uid, title: OpResult(False, "disk is locked")):
+            view = views.ConversationBrowserView(self.ctx.db_path)
+            view.on_enter()
+            view.update(KeyEvent(Key.CHAR, "n"))
+            view.update(KeyEvent(Key.CHAR, "!"))
+            view.update(KeyEvent(Key.ENTER))
+        self.assertEqual(view.m.status_severity, "error")
+        self.assertIn("disk is locked", view.m.status_msg)
+
+
 if __name__ == "__main__":
     unittest.main()
-

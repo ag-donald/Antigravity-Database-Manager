@@ -1535,8 +1535,11 @@ class TestConversationStore(unittest.TestCase):
         legacy_db = os.path.join(self.tmpdir, "state.vscdb")
         with open(legacy_db, "wb") as fh:
             fh.write(b"")
+        empty_base = os.path.join(self.tmpdir, "empty-base")
         with mock.patch.object(EnvironmentResolver, "get_antigravity_db_paths",
-                               staticmethod(lambda: [legacy_db]), create=True):
+                               staticmethod(lambda: [legacy_db])), \
+             mock.patch.object(EnvironmentResolver, "get_gemini_base_paths",
+                               staticmethod(lambda: [empty_base])):
             self.assertEqual(self.store.detect_generation(), "legacy")
 
 
@@ -1724,8 +1727,8 @@ class TestSummariesRepair(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("language server", (result.error or "").lower())
 
-    def test_repair_new_generation_writes_all_records(self):
-        """Every live conversation DB is written once via the RPC."""
+    def test_repair_new_generation_writes_missing_records(self):
+        """Without a summaries cache every live conversation DB is missing and written once."""
         from unittest import mock
         from src.core import summaries_repair as sr
         written = []
@@ -1741,6 +1744,544 @@ class TestSummariesRepair(unittest.TestCase):
         self.assertEqual(result.conversations_found, 1)
         self.assertEqual(result.summaries_written, 1)
         self.assertEqual(written, [self.record.cascade_id])
+
+
+# ==============================================================================
+# TEST: SUMMARIES REPAIR SAFETY (PR #10 review)
+# ==============================================================================
+
+_CID_A = "aaaaaaaa-1111-2222-3333-444444444444"
+_CID_B = "bbbbbbbb-1111-2222-3333-444444444444"
+
+
+class TestSummariesRepairSafety(unittest.TestCase):
+    """Missing-only rebuild, backups, dry runs, and endpoint discovery."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.gem_base = os.path.join(self.tmpdir, "antigravity")
+        convs = os.path.join(self.gem_base, "conversations")
+        os.makedirs(convs)
+        for cid in (_CID_A, _CID_B):
+            _create_conversation_db(os.path.join(convs, f"{cid}.db"),
+                                    trajectory_id=f"traj-{cid[:4]}", cascade_id=cid, n_steps=2)
+        self.cache = os.path.join(self.gem_base, "agyhub_summaries_proto.pb")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_cache(self, data: bytes) -> None:
+        with open(self.cache, "wb") as fh:
+            fh.write(data)
+
+    def _run(self, **kwargs):
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        written = []
+
+        def fake_write(port, token, payload):
+            written.append(payload["cascadeId"])
+            return True, ""
+
+        with mock.patch.object(sr, "find_language_server", lambda **kw: (52570, "tok")), \
+             mock.patch.object(sr, "write_summary", fake_write):
+            result = sr.repair_new_generation(self.gem_base, **kwargs)
+        return result, written
+
+    def _backups(self) -> list[str]:
+        return [n for n in os.listdir(self.gem_base)
+                if n.startswith(f"agyhub_summaries_proto.pb.{BACKUP_PREFIX}_")
+                and n.endswith("_before_summaries_repair")]
+
+    def test_writes_only_missing_entries(self):
+        """Conversations already listed in the cache are never rewritten."""
+        self._write_cache(b"\x0a\x24" + _CID_A.encode() + b"\x12\x03abc")
+        result, written = self._run()
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(written, [_CID_B])
+        self.assertEqual(result.already_present, 1)
+        self.assertEqual(result.summaries_written, 1)
+        self.assertEqual(len(self._backups()), 1)
+
+    def test_rewrite_all_writes_every_entry(self):
+        """rewrite_all restores the write-everything behavior on request."""
+        self._write_cache(b"\x0a\x24" + _CID_A.encode())
+        result, written = self._run(rewrite_all=True)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(sorted(written), sorted([_CID_A, _CID_B]))
+
+    def test_nothing_missing_writes_nothing(self):
+        """A complete cache needs no language server and no backup."""
+        self._write_cache(_CID_A.encode() + _CID_B.encode())
+        result, written = self._run()
+        self.assertTrue(result.success)
+        self.assertEqual(written, [])
+        self.assertEqual(result.to_write, 0)
+        self.assertEqual(self._backups(), [])
+
+    def test_dry_run_needs_no_server_and_writes_nothing(self):
+        """A dry run reports the plan without contacting the server."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+
+        def boom(**kw):
+            raise AssertionError("dry run must not look up the language server")
+
+        with mock.patch.object(sr, "find_language_server", boom):
+            result = sr.repair_new_generation(self.gem_base, dry_run=True)
+        self.assertTrue(result.success, result.error)
+        self.assertTrue(result.dry_run)
+        self.assertEqual(sorted(result.planned), sorted([_CID_A, _CID_B]))
+        self.assertEqual(self._backups(), [])
+
+    def test_zeroed_cache_rebuilds_all_and_backs_up(self):
+        """A crash-zeroed cache (Bug #13) lists nothing: every entry is rebuilt after a backup."""
+        self._write_cache(b"\x00" * 675)
+        result, written = self._run()
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(sorted(written), sorted([_CID_A, _CID_B]))
+        self.assertEqual(len(self._backups()), 1)
+        self.assertEqual(len(result.backup_paths), 1)
+
+    def test_unknown_cache_format_refuses_to_overwrite(self):
+        """A non-empty cache with no recognisable ids is never overwritten without --all."""
+        self._write_cache(b"\x0a\x05hello")
+        result, written = self._run()
+        self.assertFalse(result.success)
+        self.assertIn("refusing", result.error)
+        self.assertEqual(written, [])
+
+    def test_aborts_on_first_unreachable_error(self):
+        """A stale endpoint stops the run after the first connection failure."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        calls = []
+
+        def unreachable(port, token, payload):
+            calls.append(payload["cascadeId"])
+            raise sr.LanguageServerUnreachable("connection refused")
+
+        with mock.patch.object(sr, "find_language_server", lambda **kw: (1, "tok")), \
+             mock.patch.object(sr, "write_summary", unreachable):
+            result = sr.repair_new_generation(self.gem_base)
+        self.assertFalse(result.success)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("not reachable", result.error)
+
+    def test_cache_status_detects_zeroed_and_present(self):
+        """summaries_cache_status classifies missing, zeroed, and partial caches."""
+        from src.core.summaries_repair import summaries_cache_status
+        status = summaries_cache_status(self.gem_base, [_CID_A])
+        self.assertFalse(status.exists)
+        self.assertEqual(status.missing, (_CID_A,))
+        self._write_cache(b"\x00" * 10)
+        self.assertTrue(summaries_cache_status(self.gem_base, [_CID_A]).zeroed)
+        self._write_cache(_CID_A.encode())
+        status = summaries_cache_status(self.gem_base, [_CID_A, _CID_B])
+        self.assertEqual((status.present, status.missing), ((_CID_A,), (_CID_B,)))
+        self.assertFalse(status.format_unknown)
+
+    def test_find_language_server_pairs_port_after_last_token(self):
+        """The port is taken from the newest spawn, not the last port anywhere in the log."""
+        from src.core import summaries_repair as sr
+        log = os.path.join(self.tmpdir, "main.log")
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write("[a] --csrf_token old-token\n[a] Local: https://127.0.0.1:1111/\n"
+                     "[b] --csrf_token new-token\n[b] Local: https://127.0.0.1:2222/\n"
+                     "[a] still logging https://127.0.0.1:1111/\n")
+        self.assertEqual(sr.find_language_server(log_path=log), (2222, "new-token"))
+
+    def test_find_language_server_session_subdirectory(self):
+        """VS Code-style logs/<session>/main.log files are discovered."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        from src.core.environment import EnvironmentResolver
+        profile = os.path.join(self.tmpdir, "Antigravity")
+        session = os.path.join(profile, "logs", "20261029T101010")
+        os.makedirs(session)
+        with open(os.path.join(session, "main.log"), "w", encoding="utf-8") as fh:
+            fh.write("--csrf_token tok-9\nhttps://127.0.0.1:4242/\n")
+        with mock.patch.object(EnvironmentResolver, "get_profile_dirs",
+                               staticmethod(lambda: [profile])):
+            self.assertEqual(sr.find_language_server(), (4242, "tok-9"))
+
+
+# ==============================================================================
+# TEST: ENVIRONMENT, GENERATION DETECTION, AND CLI DISPATCH (PR #10 review)
+# ==============================================================================
+
+class TestEnvironmentDedupe(unittest.TestCase):
+    """Candidate deduplication and Windows process detection."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_dedupe_same_location_collapses(self):
+        """Paths naming one location (case-insensitive FS) are listed once."""
+        from unittest import mock
+        from src.core import environment
+        a = os.path.join(self.tmpdir, "Antigravity")
+        b = os.path.join(self.tmpdir, "antigravity2")
+        os.makedirs(a)
+        os.makedirs(b)
+        self.assertEqual(environment._dedupe([a, a]), [a])
+        with mock.patch.object(environment, "_same_file", lambda x, y: True):
+            self.assertEqual(environment._dedupe([a, b]), [a])
+        self.assertEqual(environment._dedupe([a, b]), [a, b])
+
+    def test_db_paths_have_no_duplicates(self):
+        """get_antigravity_db_paths never lists a location twice."""
+        from src.core.environment import EnvironmentResolver
+        paths = EnvironmentResolver.get_antigravity_db_paths()
+        self.assertEqual(len({os.path.normcase(p) for p in paths}), len(paths))
+
+    def test_windows_detects_ide_and_standalone_images(self):
+        """Both 'Antigravity IDE.exe' and 'Antigravity.exe' count as running."""
+        from unittest import mock
+        from src.core import environment
+        resolver = environment.EnvironmentResolver
+        with mock.patch.object(environment.sys, "platform", "win32"), \
+             mock.patch.object(environment.subprocess, "run") as fake_run:
+            fake_run.return_value.stdout = '"Antigravity IDE.exe","1234","Console","1","90 K"\n'
+            self.assertTrue(resolver.is_antigravity_running())
+            fake_run.return_value.stdout = '"Antigravity.exe","42","Console","1","90 K"\n'
+            self.assertTrue(resolver.is_antigravity_running())
+            fake_run.return_value.stdout = '"python.exe","7","Console","1","9 K"\n'
+            self.assertFalse(resolver.is_antigravity_running())
+
+
+class TestGenerationDetection(unittest.TestCase):
+    """Mixed installs, --db-path awareness, and read-only guarantees."""
+
+    def setUp(self):
+        from src.core import conversation_store as store
+        self.store = store
+        self.tmpdir = tempfile.mkdtemp()
+        self.gem_base = os.path.join(self.tmpdir, "antigravity")
+        self.convs = os.path.join(self.gem_base, "conversations")
+        os.makedirs(self.convs)
+        _create_conversation_db(os.path.join(self.convs, f"{_CID_A}.db"), cascade_id=_CID_A)
+        self.legacy_db = os.path.join(self.tmpdir, "state.vscdb")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _patched(self, db_paths):
+        from unittest import mock
+        from src.core.environment import EnvironmentResolver
+        return (mock.patch.object(EnvironmentResolver, "get_antigravity_db_paths",
+                                  staticmethod(lambda: db_paths)),
+                mock.patch.object(EnvironmentResolver, "get_gemini_base_paths",
+                                  staticmethod(lambda: [self.gem_base])))
+
+    def test_notice_respects_existing_db_path(self):
+        """An explicit, existing --db-path means the legacy views apply."""
+        ops.create_empty_db(self.legacy_db)
+        p1, p2 = self._patched([os.path.join(self.tmpdir, "none.vscdb")])
+        with p1, p2:
+            self.assertIsNotNone(self.store.legacy_missing_notice())
+            self.assertIsNone(self.store.legacy_missing_notice(self.legacy_db))
+
+    def test_mixed_generation(self):
+        """A state.vscdb next to a new-generation store (cache present) is 'mixed'."""
+        ops.create_empty_db(self.legacy_db)
+        with open(os.path.join(self.gem_base, "agyhub_summaries_proto.pb"), "wb") as fh:
+            fh.write(b"\x00" * 8)
+        p1, p2 = self._patched([self.legacy_db])
+        with p1, p2:
+            self.assertEqual(self.store.detect_generation(), "mixed")
+
+    def test_ide_db_conversations_without_cache_stay_legacy(self):
+        """The VS Code-based IDE's .db conversations (no summaries cache) are not 'new'."""
+        ops.create_empty_db(self.legacy_db)
+        p1, p2 = self._patched([self.legacy_db])
+        with p1, p2:
+            self.assertEqual(self.store.detect_generation(), "legacy")
+
+    def test_live_db_never_opened_immutable(self):
+        """The immutable=1 fallback is reserved for backup copies."""
+        from unittest import mock
+        bad = os.path.join(self.convs, "broken.db")
+        with open(bad, "wb") as fh:
+            fh.write(b"not a database at all " * 64)
+        real_connect = sqlite3.connect
+        uris = []
+
+        def spy(database, *a, **kw):
+            uris.append(database)
+            return real_connect(database, *a, **kw)
+
+        with mock.patch.object(self.store.sqlite3, "connect", spy):
+            rec = self.store.read_conversation_db(bad)
+            self.assertIsNotNone(rec.error)
+            self.assertFalse(any("immutable=1" in u for u in uris))
+            self.store.read_conversation_db(bad, is_backup=True)
+            self.assertTrue(any("immutable=1" in u for u in uris))
+
+    def test_text_blob_tolerated(self):
+        """A TEXT-typed metadata blob never raises out of the reader."""
+        path = os.path.join(self.convs, "text.db")
+        _create_conversation_db(path, blob=b"")
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE trajectory_metadata_blob SET data = ? WHERE id = 'main'",
+                     ("\x3a\x05hello",))
+        conn.commit()
+        conn.close()
+        rec = self.store.read_conversation_db(path)
+        self.assertIsInstance(rec.workspace_uri_encoded, str)
+
+
+class TestCliReviewFixes(unittest.TestCase):
+    """CLI dispatch and JSON correctness fixes."""
+
+    def setUp(self):
+        from src.core.lifecycle import ApplicationContext
+        self.tmpdir = tempfile.mkdtemp()
+        self.ctx = ApplicationContext()
+        self.ctx.db_path = os.path.join(self.tmpdir, "missing", "state.vscdb")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _execute(self, argv):
+        import contextlib
+        import io
+        from src.ui_headless import cli_parser
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cli_parser.execute(cli_parser.parse_args(argv), self.ctx)
+        return code, buf.getvalue()
+
+    def test_repair_summaries_flag_dispatches(self):
+        """'repair --summaries' reaches the new-generation repair even on mixed installs."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        from src.core.models import SummariesRepairResult
+        fake = mock.Mock(return_value=SummariesRepairResult(success=True, conversations_found=2,
+                                                            already_present=2))
+        with mock.patch.object(sr, "repair_new_generation", fake):
+            code, out = self._execute(["repair", "--summaries", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["already_present"], 2)
+        self.assertEqual(fake.call_args.kwargs["rewrite_all"], False)
+        self.assertEqual(fake.call_args.kwargs["dry_run"], False)
+
+    def test_repair_summaries_with_target_rejected(self):
+        """--summaries operates on the summaries cache and cannot take --target."""
+        code, _ = self._execute(["repair", "--summaries", "--target", "x.vscdb"])
+        self.assertEqual(code, 1)
+
+    def test_diagnose_json_is_valid_json(self):
+        """diagnose --json prints nothing but the JSON document."""
+        db = os.path.join(self.tmpdir, "state.vscdb")
+        _create_test_db(db, {"uuid-1111-2222": "One"})
+        code, out = self._execute(["diagnose", "--json", "--target", db])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["total_entries"], 1)
+        code, out = self._execute(["diagnose", "--json", "--target",
+                                   os.path.join(self.tmpdir, "none.vscdb")])
+        self.assertEqual(code, 1)
+        self.assertIn("error", json.loads(out))
+
+    def test_inspect_exit_codes_match_across_modes(self):
+        """inspect fails only when no Antigravity store exists at all."""
+        from unittest import mock
+        from src.core import conversation_store
+        from src.core.environment import EnvironmentResolver
+        with mock.patch.object(EnvironmentResolver, "get_gemini_base_paths",
+                               staticmethod(lambda: [])):
+            for generation, expected in (("legacy", 0), ("none", 1)):
+                with mock.patch.object(conversation_store, "detect_generation",
+                                       lambda db_path="", g=generation: g):
+                    self.assertEqual(self._execute(["inspect", "--json"])[0], expected)
+                    self.assertEqual(self._execute(["inspect"])[0], expected)
+
+    def test_switch_db_custom_path(self):
+        """Headless 'Switch Active Database' accepts a pasted custom path (was a NameError)."""
+        import contextlib
+        import io
+        from unittest import mock
+        from src.ui_headless import controller
+        from src.core.environment import EnvironmentResolver
+        db = os.path.join(self.tmpdir, "custom.vscdb")
+        ops.create_empty_db(db)
+        with mock.patch("builtins.input", side_effect=[f'"{db}"', ""]), \
+             mock.patch.object(EnvironmentResolver, "get_antigravity_db_paths",
+                               staticmethod(lambda: [])), \
+             mock.patch.object(self.ctx, "perform_preflight_checks", return_value=[]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            controller._menu_switch_db(self.ctx)
+        self.assertEqual(self.ctx.db_path, scanner.normalize_path(db))
+
+
+# ==============================================================================
+# TEST: AUDIT FIXES IN CORE OPERATIONS
+# ==============================================================================
+
+class TestCoreAuditFixes(unittest.TestCase):
+    """Fixes for bugs found while auditing the codebase and its forks."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "state.vscdb")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_reset_conversation_index_keeps_other_state(self):
+        """Reset clears only the two conversation indices, after a backup."""
+        _create_test_db(self.db_path, {"uuid-aaaa-1111": "One"})
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO ItemTable (key, value) VALUES ('other.setting', '1')")
+        conn.commit()
+        conn.close()
+
+        self.assertTrue(ops.reset_conversation_index(self.db_path))
+
+        conn = sqlite3.connect(self.db_path)
+        keys = {r[0] for r in conn.execute("SELECT key FROM ItemTable")}
+        conn.close()
+        self.assertEqual(keys, {"other.setting"})
+        backups = [n for n in os.listdir(self.tmpdir) if n.endswith("_before_index_reset")]
+        self.assertEqual(len(backups), 1)
+
+    def test_create_empty_db_matches_vscode_schema(self):
+        """VS Code's schema: duplicate keys replace instead of failing; user_version 1."""
+        ops.create_empty_db(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO ItemTable VALUES ('k', '1')")
+        conn.execute("INSERT INTO ItemTable VALUES ('k', '2')")
+        rows = conn.execute("SELECT value FROM ItemTable WHERE key = 'k'").fetchall()
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.close()
+        self.assertEqual(rows, [("2",)])
+        self.assertEqual(version, 1)
+
+    def test_build_workspace_dict_posix_has_three_slashes(self):
+        """POSIX paths produce file:///home/..., never file:////home/..."""
+        ws = ops.build_workspace_dict("/home/user/my proj")
+        self.assertEqual(ws["uri_plain"], "file:///home/user/my proj")
+        self.assertEqual(ws["uri_encoded"], "file:///home/user/my%20proj")
+        self.assertEqual(scanner.file_uri_to_path(ws["uri_encoded"]), "/home/user/my proj")
+
+    @unittest.skipIf(sys.platform.startswith("win"), "POSIX file URIs")
+    def test_infer_workspace_posix_three_slash_uri(self):
+        """A real file:///abs/path URI infers an absolute POSIX workspace."""
+        from src.core.artifacts import ArtifactParser
+        cid = "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee"
+        brain = os.path.join(self.tmpdir, "brain")
+        os.makedirs(os.path.join(brain, cid))
+        project = os.path.join(self.tmpdir, "myproject")
+        os.makedirs(os.path.join(project, ".git"))
+        with open(os.path.join(brain, cid, "notes.md"), "w", encoding="utf-8") as fh:
+            fh.write(f"Edited file://{project}/src/main.py\n")
+        self.assertEqual(ArtifactParser.infer_workspace_from_brain(cid, brain), project)
+
+    def _recovery_fixture(self, cid: str, inner: bytes | None = None):
+        convs = os.path.join(self.tmpdir, "conversations")
+        brain = os.path.join(self.tmpdir, "brain")
+        os.makedirs(convs, exist_ok=True)
+        os.makedirs(brain, exist_ok=True)
+        ops.create_empty_db(self.db_path)
+        if inner is not None:
+            entry = ProtobufEncoder.build_trajectory_entry(
+                cid, "Kept Title", None, 1700000000, 1700000000, existing_inner_data=inner)
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("INSERT INTO ItemTable (key, value) VALUES (?, ?)",
+                         (PB_KEY, base64.b64encode(entry).decode()))
+            conn.commit()
+            conn.close()
+        return convs, brain
+
+    def test_recovery_ignores_file_uri_inside_step_blob(self):
+        """A file:/// path inside a step blob (Field 12) is not a workspace binding."""
+        cid = "dddddddd-0000-0000-0000-000000000001"
+        inner = (ProtobufEncoder.write_string_field(1, "Kept Title")
+                 + ProtobufEncoder.write_bytes_field(
+                     12, ProtobufEncoder.write_string_field(1, "file:///tmp/elsewhere/a.py")))
+        convs, brain = self._recovery_fixture(cid, inner)
+        Path(convs, f"{cid}.pb").touch()
+        project = os.path.join(self.tmpdir, "myproject")
+        os.makedirs(os.path.join(project, ".git"))
+        os.makedirs(os.path.join(brain, cid))
+        uri_path = project.replace("\\", "/").lstrip("/")
+        with open(os.path.join(brain, cid, "notes.md"), "w", encoding="utf-8") as fh:
+            fh.write(f"Edited file:///{uri_path}/src/main.py\n")
+
+        result = ops.run_recovery_pipeline(self.db_path, convs, brain)
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.workspaces_mapped, 1)
+        conv = scanner.list_conversations(self.db_path)[0]
+        self.assertTrue(conv.workspace_uri.endswith("/myproject"), conv.workspace_uri)
+
+    def test_recovery_uses_conversation_db_workspace(self):
+        """A self-describing <uuid>.db supplies the workspace binding."""
+        cid = "eeeeeeee-0000-0000-0000-000000000001"
+        convs, brain = self._recovery_fixture(cid)
+        project = os.path.join(self.tmpdir, "dbproject")
+        os.makedirs(project)
+        uri = "file:///" + project.replace("\\", "/").lstrip("/")
+        blob = (ProtobufEncoder.write_bytes_field(1, ProtobufEncoder.write_string_field(1, uri))
+                + ProtobufEncoder.write_string_field(6, cid))
+        _create_conversation_db(os.path.join(convs, f"{cid}.db"), cascade_id=cid, blob=blob)
+
+        result = ops.run_recovery_pipeline(self.db_path, convs, brain)
+
+        self.assertTrue(result.success, result.error)
+        conv = scanner.list_conversations(self.db_path)[0]
+        self.assertTrue(conv.workspace_uri.endswith("/dbproject"), conv.workspace_uri)
+
+    def test_conversation_db_placeholder_uri_is_not_root(self):
+        """A bare 'file:///' placeholder never binds a conversation to the filesystem root."""
+        cid = "ffffffff-0000-0000-0000-000000000001"
+        convs, _ = self._recovery_fixture(cid)
+        blob = ProtobufEncoder.write_bytes_field(1, ProtobufEncoder.write_string_field(2, "file:///"))
+        _create_conversation_db(os.path.join(convs, f"{cid}.db"), cascade_id=cid, blob=blob)
+        self.assertIsNone(ops._workspace_from_conversation_db(convs, cid))
+
+    def test_sqlite_uri_handles_special_characters(self):
+        """Databases under paths with '#', '%', and spaces open read-only."""
+        odd_dir = os.path.join(self.tmpdir, "a#b%c d")
+        os.makedirs(odd_dir)
+        db = os.path.join(odd_dir, "state.vscdb")
+        _create_test_db(db, {"uuid-aaaa-1111": "One"})
+        snap = scanner.scan_database(db, "odd")
+        self.assertIsNone(snap.error)
+        self.assertEqual(snap.conversation_count, 1)
+
+    def test_truncated_tail_entry_skipped(self):
+        """A torn final entry is dropped instead of parsed from a short slice."""
+        one = ProtobufEncoder.build_trajectory_entry("uuid-one", "One", None, 1, 1)
+        two = ProtobufEncoder.build_trajectory_entry("uuid-two", "Two", None, 1, 1)
+        titles, blobs = scanner.extract_existing_metadata(one + two[:-5])
+        self.assertEqual(list(blobs), ["uuid-one"])
+
+    def test_patch_key_keeps_nan_as_string(self):
+        """'NaN'/'Infinity' are stored as strings, keeping storage.json valid JSON."""
+        from src.core.storage_manager import patch_key
+        data = {"a": 1}
+        patch_key(data, "a", "NaN")
+        self.assertEqual(data["a"], "NaN")
+        json.loads(json.dumps(data, allow_nan=False))
+
+    def test_patch_and_delete_raise_on_bad_paths(self):
+        """Non-object parents and missing keys raise instead of silently succeeding."""
+        from src.core.storage_manager import patch_key, delete_key
+        with self.assertRaises(KeyError):
+            patch_key({"a": [1]}, "a.b", "1")
+        with self.assertRaises(KeyError):
+            delete_key({"a": {}}, "a.missing")
+
+    def test_file_times_created_not_after_modified(self):
+        """Creation time never exceeds modification time."""
+        path = os.path.join(self.tmpdir, "f.pb")
+        Path(path).touch()
+        created, modified = ops.file_times(path)
+        self.assertLessEqual(created, modified)
 
 
 if __name__ == "__main__":

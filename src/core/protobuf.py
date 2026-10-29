@@ -182,43 +182,6 @@ class ProtobufEncoder:
         return False
 
     @classmethod
-    def extract_workspace_hint(cls, inner_blob: bytes) -> str | None:
-        """
-        Extract a workspace URI from the protobuf inner blob.
-        Scans length-delimited fields for strings matching file:/// patterns.
-        """
-        if not inner_blob:
-            return None
-        try:
-            pos = 0
-            while pos < len(inner_blob):
-                tag, pos = cls.decode_varint(inner_blob, pos)
-                wire_type = tag & 7
-                field_num = tag >> 3
-                if wire_type == 2:
-                    l, pos = cls.decode_varint(inner_blob, pos)
-                    content = inner_blob[pos:pos + l]
-                    pos += l
-                    if field_num > 1:
-                        try:
-                            text = content.decode("utf-8", errors="strict")
-                            if "file:///" in text:
-                                return text
-                        except Exception:
-                            pass
-                elif wire_type == 0:
-                    _, pos = cls.decode_varint(inner_blob, pos)
-                elif wire_type == 1:
-                    pos += 8
-                elif wire_type == 5:
-                    pos += 4
-                else:
-                    break
-        except Exception:
-            pass
-        return None
-
-    @classmethod
     def build_trajectory_entry(
         cls,
         conv_uuid: str,

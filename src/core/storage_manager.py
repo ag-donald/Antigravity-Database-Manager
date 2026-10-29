@@ -94,6 +94,17 @@ def _resolve_path(data: dict[str, Any], parts: list[str]) -> tuple[dict[str, Any
     return current, parts[-1]
 
 
+def _reject_constant(name: str) -> Any:
+    """json.loads hook: NaN/Infinity are not valid JSON values to store."""
+    raise ValueError(f"non-standard JSON constant {name}")
+
+
+def _require_dict(parent: Any, json_path: str) -> dict[str, Any]:
+    if not isinstance(parent, dict):
+        raise KeyError(f"Parent of '{json_path}' is not an object")
+    return parent
+
+
 def patch_key(data: dict[str, Any], json_path: str, value: Any) -> dict[str, Any]:
     """
     Updates a nested key by dotted path. Returns the mutated data dict.
@@ -108,23 +119,25 @@ def patch_key(data: dict[str, Any], json_path: str, value: Any) -> dict[str, Any
     # Coerce string values to their native JSON types when possible
     if isinstance(value, str):
         try:
-            parsed = json.loads(value)
+            parsed = json.loads(value, parse_constant=_reject_constant)
             # Only coerce scalars, not dicts/lists (which would be surprising)
             if isinstance(parsed, (bool, int, float)) or parsed is None:
                 value = parsed
         except (json.JSONDecodeError, ValueError):
             pass
-    if isinstance(parent, dict):
-        parent[final_key] = value
+    _require_dict(parent, json_path)[final_key] = value
     return data
 
 
 def delete_key(data: dict[str, Any], json_path: str) -> dict[str, Any]:
     """
     Removes a nested key by dotted path. Returns the mutated data dict.
+    Raises ``KeyError`` when the key does not exist.
     """
     parts = json_path.split(".")
     parent, final_key = _resolve_path(data, parts)
-    if isinstance(parent, dict) and final_key in parent:
-        del parent[final_key]
+    parent = _require_dict(parent, json_path)
+    if final_key not in parent:
+        raise KeyError(f"Key '{json_path}' not found")
+    del parent[final_key]
     return data
