@@ -44,11 +44,13 @@ Google Antigravity IDE (a heavily modified VS Code fork for agent-first AI devel
 
 The underlying conversation data files (`.pb` in older IDE versions, SQLite `.db` in the newest) remain **intact** on disk under `~/.gemini/antigravity-ide/conversations/` (or `~/.gemini/antigravity/conversations/` on older installations), but the IDE's internal SQLite database (`state.vscdb`) loses its UI index mappings — specifically `ChatSessionStore.index` (JSON) and `trajectorySummaries` (Protobuf) — so the sidebar shows zero history.
 
+On the newest generation (Antigravity 2.0 and builds without a `state.vscdb`), the sidebar is fed by a single summaries cache (`agyhub_summaries_proto.pb`) instead; a crash can zero it out while every conversation database survives (Bug #13).
+
 **This tool rebuilds those internal indices from your intact conversation files, restoring conversation history in the IDE.**
 
 ### Community Bug Reports
 
-This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **12 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
+This is a **widely reported issue** across the Google AI Developers Forum, Reddit, GitHub, and YouTube. We catalog **13 distinct failure modes** with community reports, technical analysis, and how this tool addresses each one:
 
 📋 **[Full Bug Catalog → BUGS_RESEARCH.md](BUGS_RESEARCH.md)**
 
@@ -66,6 +68,7 @@ This is a **widely reported issue** across the Google AI Developers Forum, Reddi
 | 10 | storage.json Desync | Parallel data stores fall out of sync |
 | 11 | Scratch Session Disabled | Workspace-less conversations hidden after upgrade |
 | 12 | Windows URI Encoding Mismatch | Raw vs percent-encoded drive-letter colons break workspace association |
+| 13 | Zeroed Summaries Cache (new generation) | Unclean shutdown leaves `agyhub_summaries_proto.pb` as NUL bytes; sidebar shows "No conversations yet" |
 
 ### Root Cause
 
@@ -74,6 +77,7 @@ These bugs stem from the IDE failing to atomically flush its internal indices du
 1. **`chat.ChatSessionStore.index`** (JSON) — reset to `{"version":1,"entries":{}}`
 2. **`antigravityUnifiedStateSync.trajectorySummaries`** (Protobuf) — loses UUID-to-conversation mappings
 3. **`storage.json`** — workspace binding metadata falls out of sync
+4. **`agyhub_summaries_proto.pb`** (newest generation only) — written non-atomically, so a crash can leave it zeroed (Bug #13)
 
 The raw conversation files (`.pb` and `.db`) under `~/.gemini/antigravity-ide/conversations/` (or the legacy `~/.gemini/antigravity/conversations/`) are **never modified** by this tool. Recovery is possible because the conversation payloads survive on disk.
 
@@ -181,8 +185,8 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (119 tests)
-└── test_tui.py                   ← TUI framework tests (50 tests)
+├── test_core.py                  ← Core logic tests (154 tests)
+└── test_tui.py                   ← TUI framework and view tests (53 tests)
 ```
 
 ### Recovery Pipeline Phases
@@ -209,9 +213,19 @@ The tool auto-detects both the **active** and **deprecated** Antigravity IDE dat
 
 The resolver prefers whichever path exists on disk, defaulting to the active `Antigravity IDE` folder.
 
-Raw conversation data is resolved the same way on all platforms: the modern `~/.gemini/antigravity-ide/` directory is preferred when it exists, with the legacy `~/.gemini/antigravity/` directory as a fallback. Both the older Protobuf (`.pb`) and the newest SQLite (`.db`) conversation formats are supported.
+Raw conversation data is resolved the same way on all platforms: the modern `~/.gemini/antigravity-ide/` directory is preferred when it exists, with the legacy `~/.gemini/antigravity/` directory as a fallback. Both the older Protobuf (`.pb`) and the newest SQLite (`.db`) conversation formats are supported. Candidate folders that are the same directory on case-insensitive filesystems (Windows, default macOS) are listed once.
 
-> **Newest IDE generation:** the very latest builds create **no `state.vscdb` at all** — every conversation is a self-contained database carrying its own metadata. For those installations `recover` is not applicable; run `inspect` for a read-only health view of the conversation store.
+### Supported Generations
+
+| Generation | Product (Windows process) | Conversations | Sidebar index | What applies |
+|------------|---------------------------|---------------|---------------|--------------|
+| **G1** | Original Antigravity (`Antigravity.exe`) | `~/.gemini/antigravity/conversations/*.pb` | `state.vscdb` in the `antigravity` profile | `scan`, `recover`, `repair`, `merge`, TUI |
+| **G2** | Antigravity IDE, VS Code-based (`Antigravity IDE.exe`) | `~/.gemini/antigravity-ide/conversations/*.pb` / `*.db` | `state.vscdb` in the `Antigravity IDE` profile | same as G1, plus `fix-uris` (Bug #12) |
+| **G3** | Antigravity 2.0 standalone and newer builds (`Antigravity.exe`, language server 2.11+) | `~/.gemini/antigravity[-ide]/conversations/<uuid>.db`, self-contained, plus `conversations_backup/` | `agyhub_summaries_proto.pb` (no `state.vscdb`) | `inspect`, `repair --summaries` |
+
+G2 and G3 are separate products and can be installed side by side; G3 also shares its `Antigravity` profile folder with G1 on case-insensitive filesystems. Such machines are reported as a **mixed** generation by `inspect`: legacy commands act on `state.vscdb`, and `repair --summaries` targets the G3 store explicitly. When no `state.vscdb` exists at all (and no `--db-path` is given), `scan`, `health`, `recover`, and the TUI show G3 guidance instead of a phantom database, and `repair` switches to the summaries repair automatically.
+
+During `recover` on G2, conversations that have no workspace binding left in `state.vscdb` take it from their own `.db` file's metadata when that folder still exists, before falling back to brain-artifact inference and the dominant workspace.
 
 - **Python:** 3.10+
 - **Dependencies:** None (standard library only)
@@ -259,7 +273,7 @@ Split pane: databases (current and backups) on the left, health report on the ri
 | `?` | Toggle Help overlay |
 | `Q` / `Esc` | Quit |
 
-**Action menu (current database):** Browse Conversations, Run Full Recovery, Create Backup, Merge From Another DB, Workspace Diagnostics, Manage Storage, Reset Database (Empty).
+**Action menu (current database):** Browse Conversations, Run Full Recovery, Create Backup, Merge From Another DB, Workspace Diagnostics, Manage Storage, Reset Conversation Indices (backs up, then clears only the `trajectorySummaries` and `ChatSessionStore.index` keys; other IDE state is kept).
 
 **Action menu (other primary database):** Set as Active Database, Browse Conversations, Compare with Current.
 
@@ -415,9 +429,23 @@ Byte-level Protobuf scanner detects ghost bytes, double-wrapping, UUID mismatche
 ```bash
 python antigravity_database_manager.py repair
 python antigravity_database_manager.py repair --target path.vscdb
+python antigravity_database_manager.py repair --dry-run
+python antigravity_database_manager.py repair --summaries            # new generation (Bug #13)
+python antigravity_database_manager.py repair --summaries --dry-run
+python antigravity_database_manager.py repair --summaries --all      # rewrite every summary
 ```
 
-On legacy installs, auto-fixes corruptions found by `diagnose` (creates a backup first). On new-generation installs (no `state.vscdb`), it instead rebuilds the Hub summaries cache: the sidebar of the newest IDE reads `agyhub_summaries_proto.pb`, which a crash can zero out while the server never rebuilds it — intact conversation databases then vanish from the sidebar ("no conversations yet"). `repair` re-writes every missing summary via the running language server's `JetboxWriteSummary` RPC, so the IDE must be open; the sidebar updates live and conversation databases are never touched.
+On G1/G2 installs, auto-fixes corruptions found by `diagnose` (creates a backup first; `--dry-run` only reports how many entries would be repaired).
+
+On G3 installs (Bug #13), `repair --summaries` rebuilds the sidebar's Hub summaries cache. It runs automatically when no `state.vscdb` exists. The newest sidebar reads `agyhub_summaries_proto.pb`, which a crash can zero out while the server never rebuilds it, so intact conversation databases vanish from the sidebar ("No conversations yet"). The repair:
+
+- rebuilds **only the conversations missing from the cache**, so existing summaries and titles are never replaced unless `--all` is given;
+- backs up the cache file first (`agyhub_summaries_proto.pb.agmercium_recovery_<timestamp>_before_summaries_repair`);
+- writes through the running language server's `JetboxWriteSummary` RPC on `127.0.0.1`, so the server persists the entries and the sidebar updates live;
+- refuses to write when the cache is non-empty but contains none of the conversation ids (unknown format), unless `--all` is given;
+- stops at the first connection failure (for example when `main.log` points at a server that has exited).
+
+Antigravity must be open for a real run; `--dry-run` works offline. Conversation databases are never touched. Rebuilt entries carry a synthetic title (`<folder> conversation (N steps)`), because the original summary text was lost with the cache.
 
 #### `fix-uris` — Workspace URI Encoding Fix (Bug #12)
 
@@ -493,7 +521,7 @@ python antigravity_database_manager.py inspect
 python antigravity_database_manager.py inspect --json
 ```
 
-The newest IDE builds no longer maintain a central `state.vscdb` index — each conversation is a self-contained SQLite database under `~/.gemini/antigravity[-ide]/conversations/<uuid>.db` that carries its own metadata (workspace, git remote, project id, cascade id), and the IDE keeps copies in a `conversations_backup/` directory next to it. `inspect` detects which data generation is installed, lists every conversation database with step counts and workspace/git bindings (backup copies flagged), and warns about conversations missing a cascade id — the new generation's invisible-history signal. Fully read-only; the legacy `recover` pipeline does not apply to this generation.
+The newest IDE builds no longer maintain a central `state.vscdb` index — each conversation is a self-contained SQLite database under `~/.gemini/antigravity[-ide]/conversations/<uuid>.db` that carries its own metadata (workspace, git remote, project id, cascade id), and the IDE keeps copies in a `conversations_backup/` directory next to it. `inspect` detects which data generation is installed (`legacy`, `new`, `mixed`, or `none`), lists every conversation database with step counts and workspace/git bindings (backup copies flagged), and reports each summaries cache: not found, **zeroed** (Bug #13), all conversations listed, or how many are missing (fix with `repair --summaries`). It also warns about conversations without a cascade id, which the summaries repair cannot rebuild. Fully read-only; exits non-zero only when no Antigravity data exists at all.
 
 ---
 
@@ -503,7 +531,7 @@ The newest IDE builds no longer maintain a central `state.vscdb` index — each 
 |------|-------------|
 | `--headless` | Force headless interactive mode (no TUI) |
 | `--db-path` | Override the default `state.vscdb` location |
-| `--json` | JSON output (supported on `scan`, `recover`, `health`, `diagnose`, `inspect`, `conversations list`, `workspace list`, `storage inspect`) |
+| `--json` | JSON output, before or after the subcommand name (supported on `scan`, `recover`, `health`, `diagnose`, `repair`, `inspect`, `backup list`, `conversations list`, `workspace list`, `storage inspect`) |
 | `--version` / `-v` | Display version number |
 | `--help` / `-h` | Display help |
 
@@ -534,11 +562,11 @@ python -m unittest discover -s tests -v
 
 ## Safety Guarantees
 
-- **Automatic backup:** A timestamped copy of your database is created before any writes.
-- **Non-destructive merge:** Existing index entries are preserved by default; additive merge only injects missing entries.
+- **Automatic backup:** A timestamped copy of your database (or, for `repair --summaries`, of the summaries cache) is created before any writes.
+- **Non-destructive merge and repair:** Existing index entries are preserved by default; additive merge only injects missing entries, and the summaries repair only adds missing ones.
 - **Automatic rollback:** If a database error occurs during recovery, the pre-write backup is restored.
-- **Read-only on conversation files:** `.pb` and `.db` payload files are never modified.
-- **No network access:** The tool operates entirely offline.
+- **Read-only on conversation files:** `.pb` and `.db` payload files are never modified (per-conversation databases are opened with SQLite `mode=ro`).
+- **No remote network access:** The tool works offline. The only connection it ever makes is `repair --summaries`, which talks to Antigravity's own language server on `127.0.0.1` (self-signed TLS, CSRF token read from the IDE's local `logs/main.log`).
 
 ---
 
@@ -568,7 +596,7 @@ cp state.vscdb.agmercium_recovery_1710820594_before_recovery state.vscdb
 
 ### Will I lose any existing history?
 
-No. Recovery and additive merge only add or update missing entries. They do not remove existing index entries unless you explicitly delete conversations or use overwrite merge.
+No. Recovery, additive merge, and the summaries repair only add or update missing entries. They do not remove existing index entries unless you explicitly delete conversations, use overwrite merge, reset the conversation indices, or pass `repair --summaries --all`.
 
 ### What if I have conversations from multiple projects?
 
@@ -576,7 +604,7 @@ Run recovery once. The pipeline scans **all** conversation files (`.pb` and `.db
 
 ### Can I run this while the IDE is open?
 
-No. The IDE may overwrite the database when it shuts down. Close Antigravity completely before running this tool.
+No. The IDE may overwrite the database when it shuts down. Close Antigravity completely before running this tool. The one exception is `repair --summaries` on the newest generation, which needs Antigravity **running**, because its language server performs the write.
 
 ### What if the tool crashes mid-run?
 

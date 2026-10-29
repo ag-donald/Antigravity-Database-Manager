@@ -88,8 +88,8 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (119 tests)
-└── test_tui.py                   ← TUI framework tests (50 tests)
+├── test_core.py                  ← Core logic tests (154 tests)
+└── test_tui.py                   ← TUI framework and view tests (53 tests)
 ```
 
 See [README.md](README.md) for usage, recovery behavior, and CLI reference.
