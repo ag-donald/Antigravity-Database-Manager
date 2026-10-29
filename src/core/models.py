@@ -22,6 +22,32 @@ class ConversationEntry:
 
 
 @dataclass(frozen=True)
+class ConversationRecord:
+    """One self-contained new-generation conversation SQLite database.
+
+    Newer IDE builds keep every conversation in its own ``<uuid>.db`` file
+    under ``~/.gemini/antigravity[-ide]/conversations/`` with no central
+    ``state.vscdb`` index; this record mirrors what such a file reveals.
+    """
+    path: str
+    trajectory_id: str = ""
+    cascade_id: str = ""
+    trajectory_type: int = 0
+    source: int = 0
+    step_count: int = 0
+    workspace_uris: tuple[str, ...] = ()
+    workspace_uri_encoded: str = ""
+    git_owner_repo: str = ""
+    git_remote: str = ""
+    git_branch: str = ""
+    project_id: str = ""
+    timestamp_seconds: int = 0
+    timestamp_nanos: int = 0
+    is_backup: bool = False
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class OpResult:
     """Boolean-like outcome of a single write operation.
 
@@ -146,6 +172,17 @@ class RepairResult:
     double_wraps_fixed: int = 0
     uuid_mismatches_fixed: int = 0
     backup_path: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SummariesRepairResult:
+    """Result of rebuilding the new-generation Hub summaries cache."""
+    success: bool
+    conversations_found: int = 0
+    summaries_written: int = 0
+    language_server_url: str = ""
+    errors: tuple[str, ...] = ()
     error: Optional[str] = None
 
 
