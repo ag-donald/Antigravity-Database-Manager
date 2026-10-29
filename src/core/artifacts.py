@@ -45,9 +45,15 @@ class ArtifactParser:
                             # The capture starts after "file:///", which
                             # swallows the POSIX root: restore it.
                             raw = "/" + raw.lstrip("/")
-                        parts = raw.replace("\\", "/").split("/")
+                        raw = raw.replace("\\", "/")
+                        if "/.gemini/" in raw:
+                            continue  # Antigravity's own data, never a workspace
+                        parts = raw.split("/")
 
-                        depth_start = 4 if is_windows else 3
+                        # Shallowest candidate keeps three components below the
+                        # root ("c:/Users/u/proj", "/home/u/proj"), so a home
+                        # folder can never win as the most common prefix.
+                        depth_start = 4
                         for d in range(depth_start, len(parts)):
                             ws = "/".join(parts[:d])
                             path_counts[ws] = path_counts.get(ws, 0) + 1

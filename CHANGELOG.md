@@ -16,7 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
   - G2: Antigravity IDE (VS Code-based), `.pb`/`.db` conversations and `state.vscdb`.
   - G3: Antigravity 2.0 and newer builds. There is no `state.vscdb`; each conversation is a self-contained `<uuid>.db` under `~/.gemini/antigravity[-ide]/conversations/`, IDE-made copies live in `conversations_backup/`, and the sidebar is fed by `agyhub_summaries_proto.pb`.
 
-  G2 and G3 can be installed side by side, and G3 shares its `Antigravity` profile folder with G1 on case-insensitive filesystems. `detect_generation()` reports `legacy`, `new`, `mixed` or `none`; the summaries cache is the marker that tells a G3 store apart from G2's `.db` conversations. New read-only reader `src/core/conversation_store.py`, contributed by Elvis33LE in PR #10: it reverse-engineers the `trajectory_metadata_blob` wire format (workspace, git, timestamps, cascade id and project id), opens live databases strictly with `mode=ro`, and uses an `immutable=1` fallback only for backup copies (`src/core/conversation_store.py`, `src/core/models.py`, `src/core/environment.py`).
+  G2 and G3 can be installed side by side, and G3 shares its `Antigravity` profile folder with G1 on case-insensitive filesystems. `detect_generation()` reports `legacy`, `new`, `mixed` or `none`; the summaries cache is the marker that tells a G3 store apart from G2's `.db` conversations. New read-only reader `src/core/conversation_store.py`, contributed by Elvis33LE in PR #10: it reverse-engineers the `trajectory_metadata_blob` wire format (workspace, git, timestamps, cascade id and project id), opens live databases strictly with `mode=ro` (never modifying them; SQLite may leave empty `-wal`/`-shm` sidecars after reading a WAL-mode file), and uses an `immutable=1` fallback only for backup copies (`src/core/conversation_store.py`, `src/core/models.py`, `src/core/environment.py`).
 - **`inspect` command** (PR #10) — Lists every conversation database across all gemini bases, with cascade id, step count, workspace URI and git branch; backup copies are flagged. It also reports each summaries cache: not found, zeroed (Bug #13), all conversations listed, N missing, or format not recognised. Exits non-zero only when no Antigravity data exists. `--json` is supported (`src/ui_headless/cli_parser.py`).
 - **`repair --summaries` — Hub summaries cache rebuild (Bug #13)** (PR #10, hardened in review) — A crash can zero `agyhub_summaries_proto.pb` (675 NUL bytes observed), and the language server never rebuilds it, so intact conversations vanish from the sidebar.
   - **What it does:** `repair --summaries` rebuilds **only the conversations missing from the cache**, through the running language server's `JetboxWriteSummary` RPC on `127.0.0.1`, so the server persists the entries and the sidebar updates live.
@@ -24,16 +24,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
     - the cache file is backed up first;
     - existing summaries are never replaced unless `--all` is given;
     - a non-empty cache with no recognisable conversation id is never overwritten without `--all`;
+    - only stores that have the summaries cache are repaired, so the VS Code-based IDE's `.db` conversations are never sent anywhere;
+    - conversation files that cannot be read are reported;
+    - synthetic titles skip the bare `file:///` placeholder and decode folder names, and millisecond or out-of-range timestamps fall back safely;
     - `--dry-run` previews the plan offline;
     - the run stops at the first connection failure;
     - conversation databases are never modified.
-  - **Finding the server:** the endpoint is taken from the newest language-server spawn in `logs/main.log` or `logs/<session>/main.log` of any profile folder. The port is paired with the last `--csrf_token`.
+  - **Finding the server:** the endpoint is taken from the newest language-server spawn in Antigravity 2.0's `logs/main.log` or `logs/<session>/main.log` (plus `~/Library/Logs/Antigravity/` on macOS). The port is paired with the last `--csrf_token`. The "Antigravity IDE" profile's logs are never used, so its own language server never receives these writes. Verified on Windows; macOS and Linux use the standard Electron log locations.
   - **When it runs:** `repair` switches to it automatically when no `state.vscdb` exists. `--summaries` reaches it on mixed installs.
 
   Reverse-engineered against language server 2.11.0 (`src/core/summaries_repair.py`, `src/ui_headless/cli_parser.py`).
 - **`repair --dry-run`** — On G1/G2 databases, reports how many entries would be repaired without writing anything.
 - **G2 recovery reads conversation `.db` metadata** — During `recover`, a `.db` conversation with no workspace binding left in `state.vscdb` takes it from its own metadata blob when that folder exists, before brain-artifact inference and the dominant-workspace fallback. Idea from the felimz fork, reimplemented on the structured reader (`src/core/db_operations.py`).
-- **Tests** — 66 new cases, 207 in total:
+- **Tests** — 77 new cases, 218 in total:
   - wire-format parsing;
   - the missing-only, `--all`, dry-run, zeroed-cache, unknown-format and unreachable-server repair paths;
   - endpoint pairing and session-folder discovery;
@@ -66,7 +69,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
   - the browser and storage views keep the selection visible at any terminal height (the clamp was hardcoded to 20 rows);
   - the merge diff table now scrolls with its cursor (`src/ui_tui/views.py`).
 - **POSIX workspace URIs had four slashes** — `build_workspace_dict("/home/u/p")` produced `file:////home/u/p`, which affected `workspace migrate` and `repair` on macOS/Linux. Windows output is unchanged (`src/core/db_operations.py`).
-- **POSIX brain-artifact workspace inference never matched** — The leading `/` was dropped, so real `file:///abs/path` URIs produced relative paths. Percent-encoding is now fully decoded too (`src/core/artifacts.py`).
+- **POSIX brain-artifact workspace inference never matched** — The leading `/` was dropped, so real `file:///abs/path` URIs produced relative paths. Percent-encoding is now fully decoded too. Candidates keep three components below the root on every OS, so a home folder (`/home/u`, `/Users/u`) can never win, and paths inside `~/.gemini/` are ignored (`src/core/artifacts.py`).
 - **Recovery misread step-blob paths as workspace bindings** — Any `file:///` string inside a top-level field (for example a tool-call path in Field 12) suppressed workspace assignment. Only the structured Fields 9.1/17.7 count now, and the unused loose `extract_workspace_hint` was removed (`src/core/db_operations.py`, `src/core/db_scanner.py`, `src/core/protobuf.py`).
 - **Read-only SQLite URIs broke on special characters** — Paths containing `?`, `#`, `%` or spaces are percent-encoded via `sqlite_uri()`, at every read-only call site (`src/core/db_scanner.py`, `src/core/db_operations.py`, `src/core/diagnostic.py`, `src/core/conversation_store.py`).
 - **Created-after-modified timestamps** — POSIX `st_ctime` (inode change time) was used as the creation time. Birth time is used where the OS records one, and creation time never exceeds modification time (`src/core/db_operations.py`, `src/core/summaries_repair.py`).
@@ -76,9 +79,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
   - patching under a non-object parent silently did nothing;
   - deleting a missing key reported success.
 
-  All three now behave correctly (`src/core/storage_manager.py`).
+  All three now behave correctly, including numeric overflows such as `1e999`, which are kept as strings (`src/core/storage_manager.py`).
 - **`storage backup/patch/delete` traceback** when the IDE profile directory is missing (`src/ui_headless/cli_parser.py`).
 - **`scan` table misalignment** — Long labels and errors are truncated to the column width (`src/core/db_scanner.py`).
+- **TUI `R` on new-generation installs** — It now explains that recovery does not apply, instead of opening the legacy wizard (`src/ui_tui/views.py`).
+- **Windows UNC workspaces** — `\\server\share\p` keeps the server as the URI authority (`file://server/share/p`) (`src/core/db_operations.py`).
+- **`diagnose` / `repair` on an empty index** — An existing but empty `trajectorySummaries` key is reported as healthy with 0 entries instead of "key not found" (`src/core/diagnostic.py`).
+- **Leaked SQLite connection** — `fix-uris --db` closed its connection on every path except "no index found" (`src/core/uri_fix.py`).
 
 ### Changed
 - **TUI "Reset Database (Empty)" → "Reset Conversation Indices"** — The old action reported success without changing anything. The new `reset_conversation_index()` backs up the database, then clears only the `trajectorySummaries` and `ChatSessionStore.index` keys; all other IDE state is kept (`src/core/db_operations.py`, `src/ui_tui/views.py`).

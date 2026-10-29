@@ -34,7 +34,10 @@ import json
 import os
 import re
 import ssl
+import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable, Iterable, Optional
 
@@ -48,6 +51,7 @@ WRITE_ROUTE = "/exa.language_server_pb.LanguageServerService/JetboxWriteSummary"
 _TOKEN_RE = re.compile(r"--csrf_token[ =](\S+)")
 _PORT_RE = re.compile(r"https://127\.0\.0\.1:(\d+)/")
 _LOG_TAIL_BYTES = 4 * 1024 * 1024
+_MAX_EPOCH = 4102444800  # 2100-01-01: anything later is not a seconds timestamp
 
 
 class LanguageServerUnreachable(Exception):
@@ -76,12 +80,22 @@ def summaries_cache_status(gem_base: str, cascade_ids: Iterable[str]) -> Summari
     )
 
 
+def _log_dirs() -> list[str]:
+    """Log folders of the Antigravity 2.0 app only. The VS Code-based
+    "Antigravity IDE" runs its own language server, which must never
+    receive these writes, so its profile is deliberately excluded."""
+    dirs = [os.path.join(profile, "logs") for profile in EnvironmentResolver.get_profile_dirs()
+            if os.path.basename(profile).lower() == "antigravity"]
+    if sys.platform.startswith("darwin"):  # Electron's macOS log location
+        dirs.append(os.path.join(os.path.expanduser("~"), "Library", "Logs", "Antigravity"))
+    return dirs
+
+
 def _main_log_candidates() -> list[str]:
-    """Electron main.log files of every known profile, newest first
+    """Electron main.log files of the app, newest first
     (``logs/main.log`` and VS Code-style ``logs/<session>/main.log``)."""
     paths: set[str] = set()
-    for profile in EnvironmentResolver.get_profile_dirs():
-        logs = os.path.join(profile, "logs")
+    for logs in _log_dirs():
         paths.update(p for p in [os.path.join(logs, "main.log"),
                                  *glob.glob(os.path.join(logs, "*", "main.log"))]
                      if os.path.isfile(p))
@@ -124,21 +138,27 @@ def _rfc3339(epoch: float) -> str:
         "%Y-%m-%dT%H:%M:%SZ")
 
 
+def _sane_epoch(value: float) -> float:
+    """Epoch seconds, accepting milliseconds; 0 when out of range."""
+    if value > _MAX_EPOCH and value / 1000 <= _MAX_EPOCH:
+        value /= 1000
+    return value if 0 < value <= _MAX_EPOCH else 0
+
+
 def build_summary_payload(record: ConversationRecord) -> dict:
     """Builds the JetboxWriteSummary JSON payload for one conversation DB."""
-    if record.workspace_uris:
-        folder = record.workspace_uris[0].rstrip("/").rsplit("/", 1)[-1]
-    else:
-        folder = "conversation"
-    summary_text = f"{folder} conversation ({record.step_count} steps)"
+    # Bare "file:///" is the placeholder of workspace-less chats, not a folder.
+    uris = [u for u in (*record.workspace_uris, record.workspace_uri_encoded)
+            if u and u.rstrip("/") != "file:"]
+    folder = urllib.parse.unquote(uris[0].rstrip("/").rsplit("/", 1)[-1]) if uris else ""
+    summary_text = f"{folder or 'conversation'} conversation ({record.step_count} steps)"
 
     try:
         created, file_modified = file_times(record.path)
-        modified = record.timestamp_seconds or file_modified
     except OSError:
-        modified = record.timestamp_seconds or 0
-        created = modified
-    created = min(created, modified) if modified else created
+        created = file_modified = 0
+    modified = _sane_epoch(record.timestamp_seconds) or file_modified or int(time.time())
+    created = min(created or modified, modified)
 
     return {
         "cascadeId": record.cascade_id,
@@ -207,11 +227,20 @@ def repair_new_generation(gem_base: str | None = None,
     already = 0
     todo: list[ConversationRecord] = []
     caches: list[str] = []
+    unreadable: list[str] = []
+    without_cache: list[str] = []
     for base in bases:
-        records = [r for r in collect_conversations(base, include_backups=False) if r.cascade_id]
+        all_records = collect_conversations(base, include_backups=False)
+        unreadable.extend(r.path for r in all_records if r.error and not r.cascade_id)
+        records = [r for r in all_records if r.cascade_id]
         if not records:
             continue
         status = summaries_cache_status(base, [r.cascade_id for r in records])
+        if not status.exists:
+            # No cache file: not an Antigravity 2.0 store (the VS Code-based
+            # IDE also keeps .db conversations). Never send those anywhere.
+            without_cache.append(base)
+            continue
         if status.format_unknown and not rewrite_all:
             return SummariesRepairResult(
                 success=False, conversations_found=len(records),
@@ -225,28 +254,37 @@ def repair_new_generation(gem_base: str | None = None,
         else:
             already += len(status.present)
             todo.extend(r for r in records if r.cascade_id in status.missing)
-        if status.exists:
-            caches.append(status.path)
+        caches.append(status.path)
 
     planned = tuple(r.cascade_id for r in todo)
+    skipped = tuple(unreadable)
     _progress("discovery", f"Found {found} live conversation(s); "
                            f"{len(todo)} summary/summaries to write.")
     if not found:
+        if without_cache:
+            return SummariesRepairResult(
+                success=False, unreadable=skipped,
+                error=f"No summaries cache ({SUMMARIES_CACHE}) next to the conversation "
+                      f"databases in {', '.join(without_cache)} — these are not Antigravity "
+                      "2.0 stores (the VS Code-based IDE also keeps .db conversations), so "
+                      "nothing was sent. If you deleted the cache file yourself, create an "
+                      "empty file with that name there and re-run.")
         return SummariesRepairResult(
-            success=False, error="No new-generation conversation databases found.")
+            success=False, unreadable=skipped,
+            error="No new-generation conversation databases found.")
     if not todo:
         return SummariesRepairResult(success=True, conversations_found=found,
-                                     already_present=already)
+                                     already_present=already, unreadable=skipped)
     if dry_run:
         return SummariesRepairResult(success=True, conversations_found=found,
                                      already_present=already, to_write=len(todo),
-                                     planned=planned, dry_run=True)
+                                     planned=planned, dry_run=True, unreadable=skipped)
 
     endpoint = find_language_server()
     if endpoint is None:
         return SummariesRepairResult(
             success=False, conversations_found=found, already_present=already,
-            to_write=len(todo), planned=planned,
+            to_write=len(todo), planned=planned, unreadable=skipped,
             error="Language server not reachable — start Antigravity (is it open?), "
                   "then re-run repair so the rebuilt summaries can be persisted.",
         )
@@ -288,6 +326,7 @@ def repair_new_generation(gem_base: str | None = None,
         to_write=len(todo),
         planned=planned,
         backup_paths=tuple(backups),
+        unreadable=skipped,
         language_server_url=url,
         errors=tuple(errors),
         error="; ".join(errors) if errors else None,

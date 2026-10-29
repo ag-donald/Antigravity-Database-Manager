@@ -288,6 +288,10 @@ class HomeView:
         elif key.char.lower() == "b" and cur_snap:
             self._backup(cur_snap.path)
         elif key.char.lower() == "r":
+            if self.m.generation_notice:
+                self.set_status(f"{Icons.WARNING} Recovery does not apply here — run "
+                                "'inspect' / 'repair --summaries' from the CLI", "warning")
+                return None
             return "push:recover"
         elif key.char.lower() == "w":
             if cur_snap:

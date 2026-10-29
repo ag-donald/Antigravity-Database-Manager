@@ -712,8 +712,12 @@ def _cmd_repair(args: argparse.Namespace, ctx: ApplicationContext) -> int:
     explicit_target = getattr(args, "target", "")
     if getattr(args, "summaries", False) or getattr(args, "rewrite_all", False):
         if explicit_target:
-            Logger.error("--summaries/--all repair the new-generation summaries cache "
-                         "and cannot be combined with --target.")
+            msg = ("--summaries/--all repair the new-generation summaries cache "
+                   "and cannot be combined with --target.")
+            if use_json:
+                print(json.dumps({"success": False, "error": msg}, indent=2))
+            else:
+                Logger.error(msg)
             return 1
         return _cmd_repair_summaries(args, ctx)
 
@@ -808,12 +812,15 @@ def _cmd_repair_summaries(args: argparse.Namespace, ctx: ApplicationContext) -> 
             "summaries_written": result.summaries_written,
             "planned": list(result.planned),
             "backup_paths": list(result.backup_paths),
+            "unreadable": list(result.unreadable),
             "language_server_url": result.language_server_url,
             "errors": list(result.errors),
             "error": result.error or "",
         }, indent=2))
         return 0 if result.success else 1
 
+    for path in result.unreadable:
+        Logger.warn(f"Could not read (skipped): {path}")
     if not result.success:
         Logger.error(f"Summaries repair failed: {result.error}")
         return 1

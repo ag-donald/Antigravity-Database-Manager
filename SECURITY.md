@@ -8,8 +8,15 @@
 
 This unofficial community Database Management Hub operates **offline** on local files. It:
 - Makes **no requests to any remote host**. The single exception is `repair --summaries` (new-generation installs, Bug #13), which talks only to the running Antigravity language server on `127.0.0.1`: HTTPS with that server's self-signed certificate, authenticated with the CSRF token the IDE writes to its own local `logs/main.log`. The token is never stored or sent anywhere else.
-- Reads conversation files (`.pb` and `.db`) and other local data under `~/.gemini/antigravity-ide/` or `~/.gemini/antigravity/` (read-only; per-conversation `.db` files are opened with SQLite `mode=ro`)
-- Writes only to the IDE's `state.vscdb` SQLite database and `storage.json` (when using storage subcommands); on new-generation installs the summaries cache is rewritten by the language server itself, never by this tool
+- Reads conversation files (`.pb` and `.db`) and other local data under `~/.gemini/antigravity-ide/` or `~/.gemini/antigravity/` (read-only; per-conversation `.db` files are opened with SQLite `mode=ro`, and SQLite may leave its standard empty `-wal`/`-shm` sidecar files next to a WAL-mode database after reading it)
+- Writes only to:
+  - the IDE's `state.vscdb` SQLite database;
+  - `storage.json` (storage subcommands);
+  - a new database at the path you give `create` / "Create Empty Database";
+  - the IDE's `workbench.desktop.main.js` and `product.json` (`fix-uris` only, with backups);
+  - its own timestamped backup files.
+
+  On new-generation installs the summaries cache is rewritten by the language server itself, never by this tool
 - Creates timestamped backups before any modifications (`{file}.agmercium_recovery_{timestamp}_{reason}`), including of `agyhub_summaries_proto.pb` before a summaries repair
 
 For tool usage, recovery steps, and CLI reference, see [README.md](README.md).

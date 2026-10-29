@@ -59,11 +59,16 @@ def build_workspace_dict(path: str) -> dict[str, str]:
     
     folder_name = os.path.basename(path_normalized) or "RecoveredProject"
 
-    # POSIX paths already start with "/": strip it so the URI keeps exactly
-    # three slashes (file:///home/u/p, never file:////home/u/p).
-    uri_path = path_normalized.lstrip("/")
-    uri_encoded = f"file:///{urllib.parse.quote(uri_path, safe='/')}"
-    uri_plain = f"file:///{uri_path}"
+    if sys.platform.startswith("win") and path_normalized.startswith("//"):
+        # UNC share (\\server\share\p): the server is the URI authority.
+        uri_encoded = f"file:{urllib.parse.quote(path_normalized, safe='/')}"
+        uri_plain = f"file:{path_normalized}"
+    else:
+        # POSIX paths already start with "/": strip it so the URI keeps
+        # exactly three slashes (file:///home/u/p, never file:////home/u/p).
+        uri_path = path_normalized.lstrip("/")
+        uri_encoded = f"file:///{urllib.parse.quote(uri_path, safe='/')}"
+        uri_plain = f"file:///{uri_path}"
 
     return {
         "uri_encoded": uri_encoded,

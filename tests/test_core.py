@@ -1644,6 +1644,9 @@ class TestSummariesRepair(unittest.TestCase):
             blob=_build_metadata_blob(cascade_id="11df4615-0000-0000-0000-000000000001"),
             n_steps=5,
         )
+        # A new-generation store always has its summaries cache (here: zeroed).
+        with open(os.path.join(self.gem_base, "agyhub_summaries_proto.pb"), "wb") as fh:
+            fh.write(b"\x00" * 16)
         self.record = ConversationRecord(
             path=os.path.join(convs, "11df4615-0000-0000-0000-000000000001.db"),
             trajectory_id="traj-a",
@@ -1824,6 +1827,8 @@ class TestSummariesRepairSafety(unittest.TestCase):
         from unittest import mock
         from src.core import summaries_repair as sr
 
+        self._write_cache(b"")
+
         def boom(**kw):
             raise AssertionError("dry run must not look up the language server")
 
@@ -1857,6 +1862,8 @@ class TestSummariesRepairSafety(unittest.TestCase):
         from src.core import summaries_repair as sr
         calls = []
 
+        self._write_cache(b"\x00" * 8)
+
         def unreachable(port, token, payload):
             calls.append(payload["cascadeId"])
             raise sr.LanguageServerUnreachable("connection refused")
@@ -1880,6 +1887,68 @@ class TestSummariesRepairSafety(unittest.TestCase):
         status = summaries_cache_status(self.gem_base, [_CID_A, _CID_B])
         self.assertEqual((status.present, status.missing), ((_CID_A,), (_CID_B,)))
         self.assertFalse(status.format_unknown)
+
+    def test_store_without_cache_is_never_sent(self):
+        """Without the summaries cache (the Antigravity 2.0 marker) nothing is written."""
+        result, written = self._run()
+        self.assertFalse(result.success)
+        self.assertIn("agyhub_summaries_proto.pb", result.error)
+        self.assertEqual(written, [])
+
+    def test_default_bases_skip_ide_conversation_dbs(self):
+        """Across all gemini bases, only stores with a summaries cache are repaired."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        from src.core.environment import EnvironmentResolver
+        ide_base = os.path.join(self.tmpdir, "antigravity-ide")
+        ide_cid = "cccccccc-1111-2222-3333-444444444444"
+        os.makedirs(os.path.join(ide_base, "conversations"))
+        _create_conversation_db(os.path.join(ide_base, "conversations", f"{ide_cid}.db"),
+                                cascade_id=ide_cid)
+        self._write_cache(_CID_A.encode())
+        with mock.patch.object(EnvironmentResolver, "get_gemini_base_paths",
+                               staticmethod(lambda: [ide_base, self.gem_base])):
+            result = sr.repair_new_generation(dry_run=True)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.planned, (_CID_B,))
+        self.assertEqual(result.conversations_found, 2)
+
+    def test_unreadable_conversations_are_reported(self):
+        """Conversation files that cannot be read are surfaced, not silently dropped."""
+        broken = os.path.join(self.gem_base, "conversations", "broken.db")
+        with open(broken, "wb") as fh:
+            fh.write(b"not a database at all " * 64)
+        self._write_cache(_CID_A.encode() + _CID_B.encode())
+        result, _ = self._run()
+        self.assertTrue(result.success)
+        self.assertEqual(result.unreadable, (broken,))
+
+    def test_payload_title_and_timestamps_are_sane(self):
+        """Placeholder URIs, encoded folder names, and ms timestamps produce sane payloads."""
+        from src.core.models import ConversationRecord
+        from src.core.summaries_repair import build_summary_payload
+        path = os.path.join(self.gem_base, "conversations", f"{_CID_A}.db")
+        rec = ConversationRecord(path=path, cascade_id=_CID_A, step_count=3,
+                                 workspace_uris=("file:///", "file:///c:/My%20Proj"),
+                                 timestamp_seconds=1756800000000)
+        summary = build_summary_payload(rec)["summary"]
+        self.assertEqual(summary["summary"], "My Proj conversation (3 steps)")
+        self.assertTrue(summary["lastModifiedTime"].startswith("2025-"))
+        bare = ConversationRecord(path=path, cascade_id=_CID_A, workspace_uris=("file:///",))
+        self.assertTrue(build_summary_payload(bare)["summary"]["summary"].startswith("conversation "))
+
+    def test_find_language_server_ignores_ide_profile(self):
+        """The VS Code-based IDE's own language server never receives these writes."""
+        from unittest import mock
+        from src.core import summaries_repair as sr
+        from src.core.environment import EnvironmentResolver
+        ide = os.path.join(self.tmpdir, "Antigravity IDE")
+        os.makedirs(os.path.join(ide, "logs"))
+        with open(os.path.join(ide, "logs", "main.log"), "w", encoding="utf-8") as fh:
+            fh.write("--csrf_token ide-tok\nhttps://127.0.0.1:7777/\n")
+        with mock.patch.object(EnvironmentResolver, "get_profile_dirs",
+                               staticmethod(lambda: [ide])):
+            self.assertIsNone(sr.find_language_server())
 
     def test_find_language_server_pairs_port_after_last_token(self):
         """The port is taken from the newest spawn, not the last port anywhere in the log."""
@@ -2074,6 +2143,12 @@ class TestCliReviewFixes(unittest.TestCase):
         code, _ = self._execute(["repair", "--summaries", "--target", "x.vscdb"])
         self.assertEqual(code, 1)
 
+    def test_repair_summaries_target_error_is_json(self):
+        """With --json, the --summaries/--target conflict is reported as JSON."""
+        code, out = self._execute(["repair", "--summaries", "--json", "--target", "x.vscdb"])
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(out)["success"])
+
     def test_diagnose_json_is_valid_json(self):
         """diagnose --json prints nothing but the JSON document."""
         db = os.path.join(self.tmpdir, "state.vscdb")
@@ -2242,6 +2317,49 @@ class TestCoreAuditFixes(unittest.TestCase):
         blob = ProtobufEncoder.write_bytes_field(1, ProtobufEncoder.write_string_field(2, "file:///"))
         _create_conversation_db(os.path.join(convs, f"{cid}.db"), cascade_id=cid, blob=blob)
         self.assertIsNone(ops._workspace_from_conversation_db(convs, cid))
+
+    @unittest.skipIf(sys.platform.startswith("win"), "POSIX file URIs")
+    def test_infer_workspace_never_picks_home_or_gemini_dirs(self):
+        """Shallow prefixes (a home folder) and Antigravity's own data never win."""
+        from src.core.artifacts import ArtifactParser
+        brain = os.path.join(self.tmpdir, "brain")
+        cases = {
+            "c1": ("file:///home/user/proj/a.py "
+                   "file:///home/user/.gemini/antigravity/brain/c1/task.md", "/home/user/proj"),
+            "c2": ("file:///Users/alice/a.py file:///Users/alice/proj/b.py", "/Users/alice/proj"),
+        }
+        for cid, (text, expected) in cases.items():
+            os.makedirs(os.path.join(brain, cid))
+            with open(os.path.join(brain, cid, "notes.md"), "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+            self.assertEqual(ArtifactParser.infer_workspace_from_brain(cid, brain), expected)
+
+    def test_build_workspace_dict_unc_share(self):
+        """Windows UNC shares keep the server as the URI authority."""
+        from unittest import mock
+        with mock.patch.object(ops.sys, "platform", "win32"):
+            ws = ops.build_workspace_dict("\\\\srv\\share\\my proj")
+        self.assertEqual(ws["uri_plain"], "file://srv/share/my proj")
+        self.assertEqual(ws["uri_encoded"], "file://srv/share/my%20proj")
+
+    def test_patch_key_overflow_stays_string(self):
+        """'1e999' overflows to inf and is kept as a string instead of writing Infinity."""
+        from src.core.storage_manager import patch_key
+        data = {"a": 1}
+        patch_key(data, "a", "1e999")
+        self.assertEqual(data["a"], "1e999")
+        json.dumps(data, allow_nan=False)
+
+    def test_diagnose_empty_index_is_healthy(self):
+        """An existing but empty trajectorySummaries index has nothing to diagnose."""
+        _create_test_db(self.db_path, {})
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT OR REPLACE INTO ItemTable VALUES (?, '')", (PB_KEY,))
+        conn.commit()
+        conn.close()
+        report = diagnostic.diagnose_database(self.db_path)
+        self.assertIsNone(report.error)
+        self.assertTrue(report.is_healthy)
 
     def test_sqlite_uri_handles_special_characters(self):
         """Databases under paths with '#', '%', and spaces open read-only."""

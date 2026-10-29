@@ -185,8 +185,8 @@ src/
     ├── controller.py
     └── logger.py
 tests/
-├── test_core.py                  ← Core logic tests (154 tests)
-└── test_tui.py                   ← TUI framework and view tests (53 tests)
+├── test_core.py                  ← Core logic tests (164 tests)
+└── test_tui.py                   ← TUI framework and view tests (54 tests)
 ```
 
 ### Recovery Pipeline Phases
@@ -440,12 +440,14 @@ On G1/G2 installs, auto-fixes corruptions found by `diagnose` (creates a backup 
 On G3 installs (Bug #13), `repair --summaries` rebuilds the sidebar's Hub summaries cache. It runs automatically when no `state.vscdb` exists. The newest sidebar reads `agyhub_summaries_proto.pb`, which a crash can zero out while the server never rebuilds it, so intact conversation databases vanish from the sidebar ("No conversations yet"). The repair:
 
 - rebuilds **only the conversations missing from the cache**, so existing summaries and titles are never replaced unless `--all` is given;
+- only touches stores that have the summaries cache file (the Antigravity 2.0 marker): the VS Code-based IDE's `.db` conversations and its own language server are never involved. If you deleted the cache file yourself, create an empty file with that name and re-run;
+- reports conversation files it could not read instead of skipping them silently;
 - backs up the cache file first (`agyhub_summaries_proto.pb.agmercium_recovery_<timestamp>_before_summaries_repair`);
 - writes through the running language server's `JetboxWriteSummary` RPC on `127.0.0.1`, so the server persists the entries and the sidebar updates live;
 - refuses to write when the cache is non-empty but contains none of the conversation ids (unknown format), unless `--all` is given;
 - stops at the first connection failure (for example when `main.log` points at a server that has exited).
 
-Antigravity must be open for a real run; `--dry-run` works offline. Conversation databases are never touched. Rebuilt entries carry a synthetic title (`<folder> conversation (N steps)`), because the original summary text was lost with the cache.
+Antigravity must be open for a real run; `--dry-run` works offline. The language server is located through Antigravity 2.0's Electron log (`<profile>/logs/[<session>/]main.log`, plus `~/Library/Logs/Antigravity/` on macOS). The RPC path was verified on Windows; on macOS and Linux it relies on these standard Electron log locations. Conversation databases are never touched. Rebuilt entries carry a synthetic title (`<folder> conversation (N steps)`), because the original summary text was lost with the cache.
 
 #### `fix-uris` — Workspace URI Encoding Fix (Bug #12)
 
@@ -565,7 +567,7 @@ python -m unittest discover -s tests -v
 - **Automatic backup:** A timestamped copy of your database (or, for `repair --summaries`, of the summaries cache) is created before any writes.
 - **Non-destructive merge and repair:** Existing index entries are preserved by default; additive merge only injects missing entries, and the summaries repair only adds missing ones.
 - **Automatic rollback:** If a database error occurs during recovery, the pre-write backup is restored.
-- **Read-only on conversation files:** `.pb` and `.db` payload files are never modified (per-conversation databases are opened with SQLite `mode=ro`).
+- **Read-only on conversation files:** `.pb` and `.db` payload files are never modified (per-conversation databases are opened with SQLite `mode=ro`; SQLite may leave its standard empty `-wal`/`-shm` sidecar files next to a WAL-mode database after reading it).
 - **No remote network access:** The tool works offline. The only connection it ever makes is `repair --summaries`, which talks to Antigravity's own language server on `127.0.0.1` (self-signed TLS, CSRF token read from the IDE's local `logs/main.log`).
 
 ---

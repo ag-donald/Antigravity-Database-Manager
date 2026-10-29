@@ -10,6 +10,7 @@ This module is UI-agnostic — no print(), input(), or ANSI codes.
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any
 
@@ -121,7 +122,9 @@ def patch_key(data: dict[str, Any], json_path: str, value: Any) -> dict[str, Any
         try:
             parsed = json.loads(value, parse_constant=_reject_constant)
             # Only coerce scalars, not dicts/lists (which would be surprising)
-            if isinstance(parsed, (bool, int, float)) or parsed is None:
+            if isinstance(parsed, float) and not math.isfinite(parsed):
+                pass  # 1e999 overflows to inf, which is not valid JSON
+            elif isinstance(parsed, (bool, int, float)) or parsed is None:
                 value = parsed
         except (json.JSONDecodeError, ValueError):
             pass

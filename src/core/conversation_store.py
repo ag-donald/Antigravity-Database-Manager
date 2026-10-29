@@ -5,7 +5,8 @@ Newer IDE builds no longer maintain a central ``state.vscdb`` index. Each
 conversation is a self-contained SQLite database under
 ``~/.gemini/antigravity[-ide]/conversations/<uuid>.db`` whose
 ``trajectory_metadata_blob`` row carries the metadata the old index held.
-This module parses those files lossily and never writes to them.
+This module parses those files lossily and never modifies them (reading
+a WAL-mode database may leave SQLite's empty -wal/-shm sidecar files).
 
 Reverse-engineered ``trajectory_metadata_blob`` field map:
   1  workspace container {1: uri, 2: uri, 3: git {1: owner/repo, 2: remote}, 4: branch}

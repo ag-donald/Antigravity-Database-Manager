@@ -220,11 +220,16 @@ def diagnose_database(db_path: str) -> DiagnosticReport:
         cur.execute("SELECT value FROM ItemTable WHERE key = ?", (PB_KEY,))
         row = cur.fetchone()
 
-        if not row or not row[0]:
+        if not row:
             return DiagnosticReport(
                 db_path=db_path, total_entries=0, corrupt_entries=0,
                 warning_entries=0, clean_entries=0,
                 error="No trajectorySummaries key found in database",
+            )
+        if not row[0]:  # Index present but empty: nothing to diagnose
+            return DiagnosticReport(
+                db_path=db_path, total_entries=0, corrupt_entries=0,
+                warning_entries=0, clean_entries=0,
             )
 
         decoded = base64.b64decode(row[0])

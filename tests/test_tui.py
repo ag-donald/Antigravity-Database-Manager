@@ -426,6 +426,18 @@ class TestViewsRobustness(unittest.TestCase):
         view.update(KeyEvent(Key.PAGE_DOWN))
         self.assertEqual(view.m.selected, 0)
 
+    def test_home_recover_shortcut_blocked_on_new_generation(self):
+        """'R' never opens the legacy recovery wizard when no state.vscdb applies."""
+        from unittest import mock
+        from src.ui_tui import views
+        with mock.patch.object(views, "legacy_missing_notice",
+                               lambda db_path="": "No state.vscdb found"), \
+             mock.patch.object(views, "scan_all", lambda path: []):
+            view = views.HomeView(self.ctx)
+            view.on_enter()
+            self.assertIsNone(view.update(KeyEvent(Key.CHAR, "r")))
+        self.assertEqual(view.m.status_severity, "warning")
+
     def test_browser_rename_failure_is_shown(self):
         """A failed rename reports the operation's error."""
         from unittest import mock

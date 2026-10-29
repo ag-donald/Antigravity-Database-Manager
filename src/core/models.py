@@ -204,6 +204,7 @@ class SummariesRepairResult:
     planned: tuple[str, ...] = ()
     backup_paths: tuple[str, ...] = ()
     dry_run: bool = False
+    unreadable: tuple[str, ...] = ()
     language_server_url: str = ""
     errors: tuple[str, ...] = ()
     error: Optional[str] = None
